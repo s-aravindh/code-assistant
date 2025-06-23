@@ -7,7 +7,7 @@ from agno.tools.local_file_system import LocalFileSystemTools
 from typing import Iterator
 from agno.workflow import RunResponse
 from agno.utils.log import logger
-from prompts import PLANNER_PROMPT, IMPLEMENTATION_PROMPT, REVIEWER_PROMPT
+from code_assistant.prompts import PLANNER_PROMPT, IMPLEMENTATION_PROMPT, REVIEWER_PROMPT
 
 planner = Agent(
     name="planner",
