@@ -2,7 +2,15 @@
 
 import asyncio
 from pathlib import Path
+from typing import AsyncIterator
 
+from agno.agent import (
+    RunContentEvent,
+    RunOutputEvent,
+    ToolCallCompletedEvent,
+    ToolCallStartedEvent,
+    RunCompletedEvent,
+)
 from agno.models.base import Model
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -122,37 +130,85 @@ class MiniClaudeCodeApp(App):
             asyncio.create_task(self._process_message(message))
 
     async def _process_message(self, message: str) -> None:
-        """Process a user message with the agent."""
+        """Process a user message with the agent using streaming."""
         if not self.agent:
             self.output.add_error_message("Agent not initialized")
             return
 
         try:
-            self.output.add_system_message("● Thinking...")
+            self.status.update_status(status="thinking")
 
-            # Run agent in thread to avoid blocking
-            response = await asyncio.to_thread(
-                self.agent.run, message, session_id=self.session_id
+            # Use async streaming with event handling
+            response_stream: AsyncIterator[RunOutputEvent] = self.agent.arun(
+                message,
+                session_id=self.session_id,
+                stream=True,
+                stream_events=True,  # Get tool call events too
             )
 
-            # Extract session_id
-            if not self.session_id and hasattr(response, 'session_id'):
-                self.session_id = response.session_id
+            has_content = False
+            final_response = None
 
-            # Display response
-            if response.content:
-                self.output.add_agent_message(response.content)
+            async for event in response_stream:
+                if isinstance(event, RunContentEvent):
+                    # Stream content chunks
+                    if event.content:
+                        if not has_content:
+                            self.output.start_streaming()
+                            has_content = True
+                        self.output.append_to_stream(event.content)
+
+                elif isinstance(event, ToolCallStartedEvent):
+                    # Tool call started
+                    tool = event.tool
+                    if tool:
+                        tool_id = tool.tool_call_id or tool.tool_name
+                        self.output.add_tool_call_started(
+                            tool_id=tool_id,
+                            tool_name=tool.tool_name,
+                            tool_args=tool.tool_args,
+                        )
+                        self.status.update_status(status=f"running: {tool.tool_name}")
+
+                elif isinstance(event, ToolCallCompletedEvent):
+                    # Tool call completed
+                    tool = event.tool
+                    if tool:
+                        tool_id = tool.tool_call_id or tool.tool_name
+                        # Check if tool had an error
+                        if tool.error:
+                            self.output.mark_tool_call_error(tool_id, str(tool.error))
+                        else:
+                            result_preview = None
+                            if tool.result is not None:
+                                result_preview = str(tool.result)
+                            self.output.mark_tool_call_completed(tool_id, result_preview)
+
+                elif isinstance(event, RunCompletedEvent):
+                    # Run completed - capture final response for metrics
+                    final_response = event
+
+            # Finalize streaming content as markdown
+            if has_content:
+                self.output.finalize_streaming_as_markdown()
             else:
                 self.output.add_system_message("Agent provided no response")
 
-            # Update token count from Agno metrics
-            if response.metrics:
-                run_tokens = getattr(response.metrics, 'total_tokens', 0) or 0
-                self.total_tokens += run_tokens
-                self.status.update_status(tokens=self.total_tokens)
+            # Extract session_id and update metrics
+            if final_response:
+                if not self.session_id and hasattr(final_response, 'session_id'):
+                    self.session_id = final_response.session_id
+
+                # Update token count from metrics
+                if hasattr(final_response, 'metrics') and final_response.metrics:
+                    run_tokens = getattr(final_response.metrics, 'total_tokens', 0) or 0
+                    self.total_tokens += run_tokens
+
+            self.status.update_status(tokens=self.total_tokens, status="ready")
 
         except Exception as e:
             self.output.add_error_message(f"Error: {e}")
+            self.status.update_status(status="error")
 
     def _handle_slash_command(self, message: str) -> None:
         """Handle a slash command."""
