@@ -42,9 +42,13 @@ PROVIDER_MODELS: Dict[str, List[ModelOption]] = {
         ModelOption("deepseek-r1", "DeepSeek R1 (local)"),
     ],
     "openrouter": [
-        ModelOption("anthropic/claude-3.5-sonnet", "Claude via OpenRouter"),
-        ModelOption("openai/gpt-4o", "GPT-4o via OpenRouter"),
-        ModelOption("google/gemini-pro", "Gemini via OpenRouter"),
+        ModelOption("anthropic/claude-sonnet-4.5", "Claude Sonnet 4.5 via OpenRouter"),
+        ModelOption("anthropic/claude-haiku-4.5", "Claude Haiku 4.5 via OpenRouter"),
+        ModelOption("anthropic/claude-opus-4.5", "Claude Opus 4.5 via OpenRouter"),
+        ModelOption("z-ai/glm-4.7", "glm-4.7 via OpenRouter"),
+        ModelOption("minimax/minimax-m2.1", "Minimax M2.1 via OpenRouter"),
+        ModelOption("google/gemini-3-flash-preview", "Gemini 3 Flash Preview via OpenRouter"),
+        ModelOption("google/gemini-3-pro-preview", "Gemini 3 pro via OpenRouter"),
     ],
     "google": [
         ModelOption("gemini-2.0-flash", "Gemini 2.0 Flash"),
