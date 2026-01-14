@@ -19,7 +19,12 @@ from textual.containers import Vertical
 from textual.widgets import Footer, Header
 
 from code_assistant.agent.coding_agent import create_coding_agent
-from code_assistant.agent.memory import create_agent_md_template
+from code_assistant.agent.memory import create_agent_md_template, parse_agent_md
+from code_assistant.agent.specialized_agents import (
+    run_init_agent,
+    run_plan_agent,
+    SubAgentManager,
+)
 from code_assistant.config.models import create_model, parse_model_string, get_model_display_name
 from code_assistant.config.settings import Settings
 from code_assistant.ui.components import (
@@ -426,8 +431,20 @@ class MiniClaudeCodeApp(App):
             case "switch_model_prompt":
                 self.action_model_selector()
             case "init_agent_md":
+                # Legacy: simple template creation
                 msg = create_agent_md_template(self.project_path)
                 self.output.add_system_message(msg)
+            case "init_smart":
+                # Smart: use agent to analyze project
+                asyncio.create_task(self._run_init_agent())
+            case "run_plan_agent":
+                asyncio.create_task(self._run_plan_agent(result["requirement"]))
+            case "run_subagent":
+                asyncio.create_task(self._run_subagent(result["task"]))
+            case "debug_bug":
+                asyncio.create_task(self._run_debug_agent(result["description"]))
+            case "generate_tests":
+                asyncio.create_task(self._run_test_generator())
             case "open_files":
                 self.action_open_files()
             case "show_help":
@@ -455,6 +472,217 @@ class MiniClaudeCodeApp(App):
             project_path=self.project_path,
             model=self.model
         )
+
+    # === Specialized Agent Runners ===
+
+    async def _run_init_agent(self) -> None:
+        """Run the init agent to analyze project and create AGENT.md."""
+        from pathlib import Path
+        
+        agent_md_path = Path(self.project_path) / "AGENT.md"
+        if agent_md_path.exists():
+            self.output.add_system_message("AGENT.md already exists. Analyzing to update...")
+        
+        self.output.add_system_message("🔍 Analyzing project structure...")
+        self.status.update_status(status="analyzing project")
+        
+        try:
+            has_content = False
+            content_buffer = ""
+            
+            async for event in run_init_agent(
+                self.project_path,
+                self.model,
+                session_id=f"{self.session_id}-init",
+            ):
+                if isinstance(event, RunContentEvent) and event.content:
+                    if not has_content:
+                        self.output.start_streaming()
+                        has_content = True
+                    self.output.append_to_stream(event.content)
+                    content_buffer += event.content
+                elif isinstance(event, ToolCallStartedEvent):
+                    tool = event.tool
+                    if tool:
+                        self.output.add_tool_call_started(
+                            tool_id=tool.tool_call_id or tool.tool_name,
+                            tool_name=tool.tool_name,
+                            tool_args=tool.tool_args or {},
+                        )
+                        has_content = False  # Reset for new content after tool
+                elif isinstance(event, ToolCallCompletedEvent):
+                    tool = event.tool
+                    if tool:
+                        self.output.mark_tool_call_completed(
+                            tool_id=tool.tool_call_id or tool.tool_name,
+                            result=str(tool.result)[:100] if tool.result else None,
+                        )
+            
+            if has_content:
+                self.output.finalize_streaming_as_markdown()
+            
+            # Try to extract and save AGENT.md content
+            if content_buffer:
+                # Look for markdown content (the agent should output AGENT.md content)
+                agent_md_path.write_text(content_buffer.strip(), encoding='utf-8')
+                self.output.add_system_message(f"✅ Created/Updated AGENT.md at {agent_md_path}")
+                
+                # Reload agent with new context
+                project_context = parse_agent_md(self.project_path)
+                if project_context:
+                    self.agent = create_coding_agent(
+                        project_path=self.project_path,
+                        model=self.model,
+                        project_context=project_context,
+                    )
+                    self.output.add_system_message("✅ Agent reloaded with project context")
+            
+            self.status.update_status(status="ready")
+            
+        except Exception as e:
+            self.logger.exception(f"Init agent error: {e}")
+            self.output.add_error_message(f"Init agent failed: {e}")
+            self.status.update_status(status="error")
+
+    async def _run_plan_agent(self, requirement: str) -> None:
+        """Run the planning agent for a requirement."""
+        self.output.add_system_message(f"📋 Creating implementation plan for: {requirement[:50]}...")
+        self.status.update_status(status="planning")
+        
+        try:
+            has_content = False
+            
+            async for event in run_plan_agent(
+                self.project_path,
+                self.model,
+                requirement,
+                session_id=f"{self.session_id}-plan",
+            ):
+                if isinstance(event, RunContentEvent) and event.content:
+                    if not has_content:
+                        self.output.start_streaming()
+                        has_content = True
+                    self.output.append_to_stream(event.content)
+                elif isinstance(event, ToolCallStartedEvent):
+                    tool = event.tool
+                    if tool:
+                        self.output.add_tool_call_started(
+                            tool_id=tool.tool_call_id or tool.tool_name,
+                            tool_name=tool.tool_name,
+                            tool_args=tool.tool_args or {},
+                        )
+                        has_content = False
+                elif isinstance(event, ToolCallCompletedEvent):
+                    tool = event.tool
+                    if tool:
+                        self.output.mark_tool_call_completed(
+                            tool_id=tool.tool_call_id or tool.tool_name,
+                            result=str(tool.result)[:100] if tool.result else None,
+                        )
+            
+            if has_content:
+                self.output.finalize_streaming_as_markdown()
+            
+            self.status.update_status(status="ready")
+            
+        except Exception as e:
+            self.logger.exception(f"Plan agent error: {e}")
+            self.output.add_error_message(f"Plan agent failed: {e}")
+            self.status.update_status(status="error")
+
+    async def _run_subagent(self, task: str) -> None:
+        """Run sub-agents for a complex task."""
+        self.output.add_system_message(f"🤖 Starting sub-agent execution for: {task[:50]}...")
+        self.status.update_status(status="sub-agents running")
+        
+        try:
+            manager = SubAgentManager(self.project_path, self.model)
+            has_content = False
+            
+            async for event in manager.execute_task(
+                task,
+                session_id=f"{self.session_id}-subagent",
+            ):
+                if isinstance(event, RunContentEvent) and event.content:
+                    if not has_content:
+                        self.output.start_streaming()
+                        has_content = True
+                    self.output.append_to_stream(event.content)
+                elif isinstance(event, ToolCallStartedEvent):
+                    tool = event.tool
+                    if tool:
+                        self.output.add_tool_call_started(
+                            tool_id=tool.tool_call_id or tool.tool_name,
+                            tool_name=tool.tool_name,
+                            tool_args=tool.tool_args or {},
+                        )
+                        has_content = False
+                elif isinstance(event, ToolCallCompletedEvent):
+                    tool = event.tool
+                    if tool:
+                        self.output.mark_tool_call_completed(
+                            tool_id=tool.tool_call_id or tool.tool_name,
+                            result=str(tool.result)[:100] if tool.result else None,
+                        )
+            
+            if has_content:
+                self.output.finalize_streaming_as_markdown()
+            
+            self.output.add_system_message(f"✅ Sub-agent execution complete")
+            self.status.update_status(status="ready")
+            
+        except Exception as e:
+            self.logger.exception(f"Sub-agent error: {e}")
+            self.output.add_error_message(f"Sub-agent execution failed: {e}")
+            self.status.update_status(status="error")
+
+    async def _run_debug_agent(self, description: str) -> None:
+        """Run the main agent in debug mode for a bug."""
+        if not self.agent:
+            self.output.add_error_message("Agent not initialized")
+            return
+        
+        self.output.add_system_message(f"🐛 Starting debug session for: {description[:50]}...")
+        
+        debug_prompt = f"""I need help debugging an issue:
+
+**Bug Description:**
+{description}
+
+Please:
+1. Analyze the codebase to understand the relevant code
+2. Identify potential causes of this bug
+3. Suggest fixes with code changes
+4. If possible, help me test the fix
+
+Start by searching for relevant code and understanding the context."""
+
+        # Use the main agent with the debug prompt
+        await self._process_message(debug_prompt)
+
+    async def _run_test_generator(self) -> None:
+        """Generate tests for recent changes."""
+        if not self.agent:
+            self.output.add_error_message("Agent not initialized")
+            return
+        
+        self.output.add_system_message("🧪 Generating tests for recent changes...")
+        
+        test_prompt = """Analyze the codebase and generate tests:
+
+1. First, run `git diff HEAD~1` to see recent changes
+2. Identify what code was modified or added
+3. Generate appropriate unit tests for the changes
+4. Follow the existing test patterns in the project
+
+Focus on:
+- Testing the new/modified functionality
+- Edge cases
+- Error handling
+
+Generate the test code and explain what each test covers."""
+
+        await self._process_message(test_prompt)
 
     # === Actions ===
 

@@ -35,9 +35,15 @@ HELP_TEXT = """
 - `/undo` - Undo last applied change
 
 **Git:**
-- `/init` - Initialize project memory (AGENT.md)
+- `/init` - Analyze project and create AGENT.md (smart)
 - `/review` - Review current changes in git
 - `/commit` - Generate commit message and commit
+
+**Advanced Agents:**
+- `/plan <requirement>` - Create implementation plan for a feature
+- `/subagent <task>` - Execute complex task with sub-agents
+- `/bug <description>` - Start debugging workflow
+- `/test` - Generate tests for recent changes
 """
 
 
@@ -74,7 +80,7 @@ class SlashCommandHandler:
             "/cost": lambda _: _action("show_cost"),
             "/exit": lambda _: _action("exit"),
             "/quit": lambda _: _action("exit"),
-            "/init": lambda _: _action("init_agent_md"),
+            "/init": lambda _: _action("init_smart"),  # Smart init with agent
             "/review": lambda _: _action("git_review"),
             "/commit": lambda _: _action("git_commit"),
             "/model": self._model,
@@ -82,6 +88,11 @@ class SlashCommandHandler:
             "/remove": self._remove,
             "/save": self._save,
             "/load": self._load,
+            # Advanced agent commands
+            "/plan": self._plan,
+            "/subagent": self._subagent,
+            "/bug": self._bug,
+            "/test": lambda _: _action("generate_tests"),
         }
 
     def is_slash_command(self, message: str) -> bool:
@@ -130,3 +141,21 @@ class SlashCommandHandler:
         if not args:
             return _error("Usage: /load <filename>")
         return _action("load_conversation", filename=args[0])
+
+    def _plan(self, args: CommandArgs) -> CommandResult:
+        if not args:
+            return _error("Usage: /plan <requirement description>")
+        requirement = " ".join(args)
+        return _action("run_plan_agent", requirement=requirement)
+
+    def _subagent(self, args: CommandArgs) -> CommandResult:
+        if not args:
+            return _error("Usage: /subagent <task description>")
+        task = " ".join(args)
+        return _action("run_subagent", task=task)
+
+    def _bug(self, args: CommandArgs) -> CommandResult:
+        if not args:
+            return _error("Usage: /bug <bug description or error message>")
+        description = " ".join(args)
+        return _action("debug_bug", description=description)
