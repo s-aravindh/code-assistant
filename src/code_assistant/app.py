@@ -53,7 +53,7 @@ class MiniClaudeCodeApp(App):
     """
 
     BINDINGS = [
-        Binding("ctrl+c", "quit", "Quit", priority=True),
+        Binding("ctrl+q", "quit", "Quit", priority=True),
         Binding("ctrl+l", "clear", "Clear"),
         Binding("ctrl+k", "model_selector", "Model", priority=True),
         Binding("ctrl+o", "open_files", "Files"),
@@ -116,7 +116,7 @@ class MiniClaudeCodeApp(App):
         self.status.update_status(model=self.model_display, working_dir=self.project_path)
 
         self.output.add_system_message(
-            "Enter send │ Ctrl+K model │ Ctrl+O files │ F1 help"
+            "Enter send │ Ctrl+Q quit │ Ctrl+K model │ Ctrl+O files │ F1 help"
         )
         self.output.add_system_message(f"📁 {self.project_path}")
 
@@ -145,7 +145,14 @@ class MiniClaudeCodeApp(App):
             asyncio.create_task(self._process_message(message))
 
     async def _process_message(self, message: str) -> None:
-        """Process a user message with the agent using streaming."""
+        """Process a user message with the agent using streaming.
+        
+        Uses Agno's HITL pattern:
+        1. Stream events from agent.arun()
+        2. If run_event.is_paused, handle tool confirmations
+        3. Use acontinue_run(run_response=run_event) to resume
+        4. Loop while is_paused to handle multiple confirmation rounds
+        """
         if not self.agent:
             self.output.add_error_message("Agent not initialized")
             self.logger.error("Agent not initialized")
@@ -155,69 +162,71 @@ class MiniClaudeCodeApp(App):
             self.status.update_status(status="thinking")
             self.logger.info(f"User: {message[:100]}...")
 
-            # Use async streaming with event handling
-            response_stream: AsyncIterator[RunOutputEvent] = self.agent.arun(
-                message,
-                session_id=self.session_id,
-                stream=True,
-                stream_events=True,  # Get tool call events too
-            )
-
             has_content = False
             final_response = None
-
-            async for event in response_stream:
-                # Check if this event indicates a paused run (needs confirmation)
-                if hasattr(event, 'is_paused') and event.is_paused:
-                    self.logger.info("Run paused - waiting for tool confirmations")
-                    
-                    # Handle tool confirmations
-                    if hasattr(event, 'active_requirements'):
-                        for requirement in event.active_requirements:
-                            if hasattr(requirement, 'needs_confirmation') and requirement.needs_confirmation:
-                                tool_exec = requirement.tool_execution
-                                tool_name = getattr(tool_exec, 'tool_name', 'unknown')
-                                tool_args = getattr(tool_exec, 'tool_args', {})
-                                
-                                self.logger.info(f"Tool awaiting: {tool_name}")
-                                
-                                # Show approval dialog
-                                approved = await self._show_approval_dialog(
-                                    tool_name=tool_name,
-                                    tool_args=tool_args,
-                                )
-                                
-                                if approved:
-                                    requirement.confirm()
-                                    self.logger.info(f"Tool confirmed: {tool_name}")
-                                else:
-                                    requirement.reject()
-                                    self.logger.info(f"Tool rejected: {tool_name}")
-                                    self.output.add_system_message(f"Tool call rejected: {tool_name}")
-                    
-                    # Continue the run after handling confirmations
-                    run_id = getattr(event, 'run_id', None)
-                    if run_id:
-                        self.logger.info(f"Continuing run: {run_id}")
-                        # Continue streaming from the resumed run
-                        async for continue_event in self.agent.acontinue_run(
-                            run_id=run_id,
-                            updated_tools=getattr(event, 'tools', None),
-                            stream=True,
-                            stream_events=True,
-                            session_id=self.session_id,
-                        ):
-                            has_content = await self._handle_event(continue_event, has_content)
-                            if isinstance(continue_event, RunCompletedEvent):
-                                final_response = continue_event
-                        # After continuing, break from outer loop
-                        break
-
-                # Handle regular events
-                has_content = await self._handle_event(event, has_content)
+            
+            # Initial run with streaming
+            run_result = await self._stream_run(
+                self.agent.arun(
+                    message,
+                    session_id=self.session_id,
+                    stream=True,
+                    stream_events=True,
+                ),
+                has_content,
+            )
+            has_content = run_result["has_content"]
+            final_response = run_result.get("final_response")
+            run_event = run_result.get("run_event")
+            
+            # HITL loop: handle pauses and continue until complete
+            while run_event and hasattr(run_event, 'is_paused') and run_event.is_paused:
+                self.logger.info("Run paused - waiting for tool confirmations")
                 
-                if isinstance(event, RunCompletedEvent):
-                    final_response = event
+                # For streaming HITL, tools requiring confirmation are in run_event.tools
+                tools_to_confirm = getattr(run_event, 'tools', None) or []
+                
+                for tool in tools_to_confirm:
+                    tool_name = getattr(tool, 'tool_name', 'unknown')
+                    tool_args = getattr(tool, 'tool_args', {}) or {}
+                    
+                    # Check if this tool requires confirmation
+                    if getattr(tool, 'confirmation_required', False) or getattr(tool, 'requires_confirmation', False):
+                        self.logger.info(f"Tool awaiting confirmation: {tool_name}")
+                        
+                        # Show approval dialog
+                        approved = await self._show_approval_dialog(
+                            tool_name=tool_name,
+                            tool_args=tool_args,
+                        )
+                        
+                        if approved:
+                            tool.confirmed = True
+                            self.logger.info(f"Tool confirmed: {tool_name}")
+                        else:
+                            tool.confirmed = False
+                            self.logger.info(f"Tool rejected: {tool_name}")
+                            self.output.add_system_message(f"Tool call rejected: {tool_name}")
+                
+                # Continue the run after handling confirmations
+                run_id = getattr(run_event, 'run_id', None)
+                self.logger.info(f"Continuing run: {run_id}")
+                self.status.update_status(status="continuing")
+                
+                # Continue using run_id and updated_tools pattern for streaming
+                continue_result = await self._stream_run(
+                    self.agent.acontinue_run(
+                        run_id=run_id,
+                        updated_tools=tools_to_confirm,
+                        stream=True,
+                        stream_events=True,
+                        session_id=self.session_id,
+                    ),
+                    has_content,
+                )
+                has_content = continue_result["has_content"]
+                final_response = continue_result.get("final_response") or final_response
+                run_event = continue_result.get("run_event")
 
             # Finalize streaming content as markdown
             if has_content:
@@ -243,8 +252,53 @@ class MiniClaudeCodeApp(App):
             self.output.add_error_message(f"Error: {e}")
             self.status.update_status(status="error")
 
+    async def _stream_run(
+        self,
+        response_stream: AsyncIterator[RunOutputEvent],
+        has_content: bool,
+    ) -> dict:
+        """Stream events from an agent run and return the final state.
+        
+        Args:
+            response_stream: Async iterator of run events
+            has_content: Whether content has been streamed already
+            
+        Returns:
+            dict with keys:
+              - has_content: bool
+              - final_response: RunCompletedEvent or None
+              - run_event: Last event (may have is_paused=True)
+        """
+        final_response = None
+        run_event = None
+        
+        async for event in response_stream:
+            run_event = event
+            
+            # Check if this is a paused event - stop processing and return
+            if hasattr(event, 'is_paused') and event.is_paused:
+                self.logger.debug("Received paused event, returning for HITL handling")
+                break
+            
+            # Handle regular events
+            has_content = await self._handle_event(event, has_content)
+            
+            if isinstance(event, RunCompletedEvent):
+                final_response = event
+        
+        return {
+            "has_content": has_content,
+            "final_response": final_response,
+            "run_event": run_event,
+        }
+
     async def _handle_event(self, event: RunOutputEvent, has_content: bool) -> bool:
-        """Handle a single event and return updated has_content status."""
+        """Handle a single event and return updated has_content status.
+        
+        Maintains proper event ordering:
+        - Content before tool calls is finalized when tool starts
+        - Content after tool calls gets a new streaming container
+        """
         if isinstance(event, RunContentEvent):
             # Stream content chunks
             if event.content:
@@ -263,12 +317,16 @@ class MiniClaudeCodeApp(App):
                 tool_args = tool.tool_args or {}
                 
                 self.logger.info(f"Tool started: {tool_name}")
+                # add_tool_call_started will finalize any current streaming content
+                # This ensures content appears BEFORE the tool widget
                 self.output.add_tool_call_started(
                     tool_id=tool_id,
                     tool_name=tool_name,
                     tool_args=tool_args,
                 )
                 self.status.update_status(status=f"running: {tool_name}")
+                # Reset has_content so content AFTER tool call gets a new container
+                has_content = False
 
         elif isinstance(event, ToolCallCompletedEvent):
             # Tool call completed
@@ -276,7 +334,6 @@ class MiniClaudeCodeApp(App):
             if tool:
                 tool_id = tool.tool_call_id or tool.tool_name
                 tool_name = tool.tool_name
-                tool_args = tool.tool_args or {}
                 
                 # Agno's ToolExecution may or may not expose an error field depending on backend.
                 error = getattr(tool, "error", None)

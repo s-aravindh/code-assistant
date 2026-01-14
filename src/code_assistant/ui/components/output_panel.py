@@ -4,6 +4,14 @@ from textual.containers import VerticalScroll
 from textual.widgets import Markdown, Static
 
 
+def escape_markup(text: str) -> str:
+    """Escape Rich markup characters to prevent parsing errors.
+    
+    Brackets [ ] are doubled to escape them in Rich markup.
+    """
+    return text.replace("[", "[[").replace("]", "]]")
+
+
 class StreamingMessage(Static):
     """A message widget that can be updated for streaming content."""
 
@@ -74,6 +82,8 @@ class ToolCallWidget(Static):
             v_str = str(v)
             if len(v_str) > max_len:
                 v_str = v_str[:max_len] + "..."
+            # Escape markup characters in argument values
+            v_str = escape_markup(v_str)
             parts.append(f"{k}={v_str}")
         return "[dim](" + ", ".join(parts) + ")[/dim]"
 
@@ -86,6 +96,8 @@ class ToolCallWidget(Static):
             result_str = str(result)[:100]
             if len(str(result)) > 100:
                 result_str += "..."
+            # Escape markup characters in result to prevent parsing errors
+            result_str = escape_markup(result_str)
             result_preview = f" → [dim]{result_str}[/dim]"
         self.update(f"[dim]✓ {self.tool_name}[/dim]{result_preview}")
 
@@ -93,7 +105,9 @@ class ToolCallWidget(Static):
         """Mark the tool call as failed."""
         self.remove_class("running")
         self.add_class("error")
-        error_msg = f" → [red]{error}[/red]" if error else ""
+        # Escape markup characters in error message
+        error_escaped = escape_markup(str(error)) if error else ""
+        error_msg = f" → [red]{error_escaped}[/red]" if error else ""
         self.update(f"[dim]✗ {self.tool_name}[/dim]{error_msg}")
 
 
@@ -153,7 +167,9 @@ class OutputPanel(VerticalScroll):
     def add_user_message(self, message: str) -> None:
         """Add a user message to the output."""
         self._finalize_streaming()
-        self._add_message(Static(f"[bold]You:[/bold] {message}", classes="user-message"))
+        # Escape markup in user message to prevent parsing errors
+        safe_message = escape_markup(message)
+        self._add_message(Static(f"[bold]You:[/bold] {safe_message}", classes="user-message"))
 
     def add_agent_message(self, message: str) -> None:
         """Add an agent message (supports markdown)."""
@@ -163,12 +179,16 @@ class OutputPanel(VerticalScroll):
     def add_system_message(self, message: str) -> None:
         """Add a system message."""
         self._finalize_streaming()
-        self._add_message(Static(f"[italic]{message}[/italic]", classes="system-message"))
+        # Escape markup in system message to prevent parsing errors
+        safe_message = escape_markup(message)
+        self._add_message(Static(f"[italic]{safe_message}[/italic]", classes="system-message"))
 
     def add_error_message(self, message: str) -> None:
         """Add an error message."""
         self._finalize_streaming()
-        self._add_message(Static(f"[bold red]Error:[/bold red] {message}", classes="error-message"))
+        # Escape markup in error message to prevent parsing errors
+        safe_message = escape_markup(message)
+        self._add_message(Static(f"[bold red]Error:[/bold red] {safe_message}", classes="error-message"))
 
     # === Streaming support ===
 
@@ -205,6 +225,10 @@ class OutputPanel(VerticalScroll):
 
     def add_tool_call_started(self, tool_id: str, tool_name: str, tool_args: dict | None = None) -> None:
         """Add a tool call started indicator."""
+        # Finalize any streaming content BEFORE the tool call widget
+        # This ensures proper ordering: content -> tool -> more content
+        self._finalize_streaming()
+        
         widget = ToolCallWidget(tool_name, tool_args)
         self._tool_widgets[tool_id] = widget
         self.mount(widget)
