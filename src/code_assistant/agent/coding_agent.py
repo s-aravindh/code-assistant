@@ -63,6 +63,10 @@ def create_coding_agent(
         db=db,
         enable_user_memories=True,
         markdown=True,
+        num_history_runs=15,
+        add_history_to_context=True,
+        read_chat_history=True,
+        read_tool_call_history=True,
     )
 
     return agent

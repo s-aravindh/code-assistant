@@ -32,6 +32,10 @@ def main(
         None, "--api-key", "-k",
         help="API key (overrides environment variable)"
     ),
+    log_dir: str | None = typer.Option(
+        None, "--log-dir", "-l",
+        help="Custom log directory (defaults to project_path/mcc_logs)"
+    ),
     version: bool = typer.Option(False, "--version", "-V", help="Show version"),
 ):
     """Start the Mini-Claude-Code TUI.
@@ -65,7 +69,7 @@ def main(
         model_kwargs["api_key"] = api_key
 
     try:
-        run_app(project_path=proj_path, model=model, **model_kwargs)
+        run_app(project_path=proj_path, model=model, log_dir=log_dir, **model_kwargs)
     except KeyboardInterrupt:
         console.print("\n[dim]Goodbye![/dim]")
     except Exception as e:

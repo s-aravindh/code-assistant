@@ -1,8 +1,9 @@
 """Main TUI application for Mini-Claude-Code."""
 
 import asyncio
+import uuid
 from pathlib import Path
-from typing import AsyncIterator
+from typing import AsyncIterator, Optional
 
 from agno.agent import (
     RunContentEvent,
@@ -20,13 +21,16 @@ from textual.widgets import Footer, Header
 from code_assistant.agent.coding_agent import create_coding_agent
 from code_assistant.agent.memory import create_agent_md_template
 from code_assistant.config.models import create_model, parse_model_string, get_model_display_name
+from code_assistant.config.settings import Settings
 from code_assistant.ui.components import (
     InputPanel,
     OutputPanel,
     StatusBar,
     FileViewer,
     ModelSelectorScreen,
+    ApprovalDialog,
 )
+from code_assistant.utils.logger import create_logger
 from code_assistant.utils.slash_commands import SlashCommandHandler
 
 
@@ -62,6 +66,7 @@ class MiniClaudeCodeApp(App):
         self,
         project_path: str | None = None,
         model: Model | str = "anthropic:claude-sonnet-4-20250514",
+        log_dir: str | Path | None = None,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -76,9 +81,19 @@ class MiniClaudeCodeApp(App):
 
         self.model_display = get_model_display_name(self.model)
         self.agent = None
-        self.session_id = None
+        self.session_id = str(uuid.uuid4())
         self.total_tokens = 0
         self.slash_handler = SlashCommandHandler()
+        
+        # Initialize logger
+        settings = Settings()
+        self.logger = create_logger(
+            session_id=self.session_id,
+            log_dir=log_dir or settings.log_file,
+            project_path=self.project_path,
+            level=settings.log_level,
+        )
+        self.logger.info(f"App started: model={self.model_display}, path={self.project_path}")
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -133,10 +148,12 @@ class MiniClaudeCodeApp(App):
         """Process a user message with the agent using streaming."""
         if not self.agent:
             self.output.add_error_message("Agent not initialized")
+            self.logger.error("Agent not initialized")
             return
 
         try:
             self.status.update_status(status="thinking")
+            self.logger.info(f"User: {message[:100]}...")
 
             # Use async streaming with event handling
             response_stream: AsyncIterator[RunOutputEvent] = self.agent.arun(
@@ -150,42 +167,56 @@ class MiniClaudeCodeApp(App):
             final_response = None
 
             async for event in response_stream:
-                if isinstance(event, RunContentEvent):
-                    # Stream content chunks
-                    if event.content:
-                        if not has_content:
-                            self.output.start_streaming()
-                            has_content = True
-                        self.output.append_to_stream(event.content)
+                # Check if this event indicates a paused run (needs confirmation)
+                if hasattr(event, 'is_paused') and event.is_paused:
+                    self.logger.info("Run paused - waiting for tool confirmations")
+                    
+                    # Handle tool confirmations
+                    if hasattr(event, 'active_requirements'):
+                        for requirement in event.active_requirements:
+                            if hasattr(requirement, 'needs_confirmation') and requirement.needs_confirmation:
+                                tool_exec = requirement.tool_execution
+                                tool_name = getattr(tool_exec, 'tool_name', 'unknown')
+                                tool_args = getattr(tool_exec, 'tool_args', {})
+                                
+                                self.logger.info(f"Tool awaiting: {tool_name}")
+                                
+                                # Show approval dialog
+                                approved = await self._show_approval_dialog(
+                                    tool_name=tool_name,
+                                    tool_args=tool_args,
+                                )
+                                
+                                if approved:
+                                    requirement.confirm()
+                                    self.logger.info(f"Tool confirmed: {tool_name}")
+                                else:
+                                    requirement.reject()
+                                    self.logger.info(f"Tool rejected: {tool_name}")
+                                    self.output.add_system_message(f"Tool call rejected: {tool_name}")
+                    
+                    # Continue the run after handling confirmations
+                    run_id = getattr(event, 'run_id', None)
+                    if run_id:
+                        self.logger.info(f"Continuing run: {run_id}")
+                        # Continue streaming from the resumed run
+                        async for continue_event in self.agent.acontinue_run(
+                            run_id=run_id,
+                            updated_tools=getattr(event, 'tools', None),
+                            stream=True,
+                            stream_events=True,
+                            session_id=self.session_id,
+                        ):
+                            has_content = await self._handle_event(continue_event, has_content)
+                            if isinstance(continue_event, RunCompletedEvent):
+                                final_response = continue_event
+                        # After continuing, break from outer loop
+                        break
 
-                elif isinstance(event, ToolCallStartedEvent):
-                    # Tool call started
-                    tool = event.tool
-                    if tool:
-                        tool_id = tool.tool_call_id or tool.tool_name
-                        self.output.add_tool_call_started(
-                            tool_id=tool_id,
-                            tool_name=tool.tool_name,
-                            tool_args=tool.tool_args,
-                        )
-                        self.status.update_status(status=f"running: {tool.tool_name}")
-
-                elif isinstance(event, ToolCallCompletedEvent):
-                    # Tool call completed
-                    tool = event.tool
-                    if tool:
-                        tool_id = tool.tool_call_id or tool.tool_name
-                        # Check if tool had an error
-                        if tool.error:
-                            self.output.mark_tool_call_error(tool_id, str(tool.error))
-                        else:
-                            result_preview = None
-                            if tool.result is not None:
-                                result_preview = str(tool.result)
-                            self.output.mark_tool_call_completed(tool_id, result_preview)
-
-                elif isinstance(event, RunCompletedEvent):
-                    # Run completed - capture final response for metrics
+                # Handle regular events
+                has_content = await self._handle_event(event, has_content)
+                
+                if isinstance(event, RunCompletedEvent):
                     final_response = event
 
             # Finalize streaming content as markdown
@@ -196,19 +227,114 @@ class MiniClaudeCodeApp(App):
 
             # Extract session_id and update metrics
             if final_response:
-                if not self.session_id and hasattr(final_response, 'session_id'):
+                if hasattr(final_response, 'session_id') and final_response.session_id:
                     self.session_id = final_response.session_id
 
                 # Update token count from metrics
                 if hasattr(final_response, 'metrics') and final_response.metrics:
                     run_tokens = getattr(final_response.metrics, 'total_tokens', 0) or 0
                     self.total_tokens += run_tokens
+                    self.logger.info(f"Response: {run_tokens} tokens")
 
             self.status.update_status(tokens=self.total_tokens, status="ready")
 
         except Exception as e:
+            self.logger.exception(f"Error: {e}")
             self.output.add_error_message(f"Error: {e}")
             self.status.update_status(status="error")
+
+    async def _handle_event(self, event: RunOutputEvent, has_content: bool) -> bool:
+        """Handle a single event and return updated has_content status."""
+        if isinstance(event, RunContentEvent):
+            # Stream content chunks
+            if event.content:
+                if not has_content:
+                    self.output.start_streaming()
+                    has_content = True
+                self.output.append_to_stream(event.content)
+                self.logger.debug(f"Chunk: {len(event.content)} chars")
+
+        elif isinstance(event, ToolCallStartedEvent):
+            # Tool call started
+            tool = event.tool
+            if tool:
+                tool_id = tool.tool_call_id or tool.tool_name
+                tool_name = tool.tool_name
+                tool_args = tool.tool_args or {}
+                
+                self.logger.info(f"Tool started: {tool_name}")
+                self.output.add_tool_call_started(
+                    tool_id=tool_id,
+                    tool_name=tool_name,
+                    tool_args=tool_args,
+                )
+                self.status.update_status(status=f"running: {tool_name}")
+
+        elif isinstance(event, ToolCallCompletedEvent):
+            # Tool call completed
+            tool = event.tool
+            if tool:
+                tool_id = tool.tool_call_id or tool.tool_name
+                tool_name = tool.tool_name
+                tool_args = tool.tool_args or {}
+                
+                # Agno's ToolExecution may or may not expose an error field depending on backend.
+                error = getattr(tool, "error", None)
+                if error:
+                    self.logger.error(f"Tool error: {tool_name} - {error}")
+                    self.output.mark_tool_call_error(tool_id, str(error))
+                else:
+                    result_preview = None
+                    if getattr(tool, "result", None) is not None:
+                        result_preview = str(tool.result)
+                    self.logger.info(f"Tool done: {tool_name}")
+                    self.output.mark_tool_call_completed(tool_id, result_preview)
+
+        return has_content
+
+    async def _show_approval_dialog(self, tool_name: str, tool_args: dict) -> bool:
+        """Show approval dialog and return True if approved."""
+        # Create a message describing the operation
+        operation_desc = self._get_operation_description(tool_name, tool_args)
+        
+        dialog = ApprovalDialog(
+            title=f"Approve {tool_name}?",
+            message=operation_desc,
+            tool_name=tool_name,
+            tool_args=tool_args,
+        )
+        
+        # Use Future to wait for dialog result
+        future = asyncio.Future()
+        
+        def handle_result(result: str | None) -> None:
+            if not future.done():
+                future.set_result(result == "approved")
+        
+        self.push_screen(dialog, handle_result)
+        result = await future
+        return result
+
+    def _get_operation_description(self, tool_name: str, tool_args: dict) -> str:
+        """Get a human-readable description of the operation."""
+        if tool_name == "write_file":
+            file_path = tool_args.get("file_path", "unknown")
+            content_len = len(str(tool_args.get("content", "")))
+            return f"Write {content_len} characters to {file_path}"
+        elif tool_name == "edit_file":
+            file_path = tool_args.get("file_path", "unknown")
+            return f"Edit file {file_path}"
+        elif tool_name == "delete_file":
+            file_path = tool_args.get("file_path", "unknown")
+            return f"Delete file {file_path}"
+        elif tool_name == "run_command":
+            command = tool_args.get("command", "unknown")
+            return f"Execute command: {command}"
+        elif tool_name == "git_commit":
+            message = tool_args.get("message", "unknown")
+            return f"Create git commit: {message}"
+        else:
+            return f"Execute {tool_name} with provided arguments"
 
     def _handle_slash_command(self, message: str) -> None:
         """Handle a slash command."""
@@ -313,12 +439,20 @@ class MiniClaudeCodeApp(App):
 def run_app(
     project_path: str | None = None,
     model: Model | str = "anthropic:claude-sonnet-4-20250514",
+    log_dir: str | Path | None = None,
     **model_kwargs,
 ) -> None:
-    """Run the TUI application."""
+    """Run the TUI application.
+    
+    Args:
+        project_path: Path to the project directory
+        model: Model string or Model instance
+        log_dir: Custom log directory (defaults to project_path/mcc_logs)
+        **model_kwargs: Additional model parameters
+    """
     if isinstance(model, str) and model_kwargs:
         provider, model_id = parse_model_string(model)
         model = create_model(provider, model_id, **model_kwargs)
 
-    app = MiniClaudeCodeApp(project_path=project_path, model=model)
+    app = MiniClaudeCodeApp(project_path=project_path, model=model, log_dir=log_dir)
     app.run()
