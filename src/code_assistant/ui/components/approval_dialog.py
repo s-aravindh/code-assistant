@@ -4,6 +4,18 @@ from textual.app import ComposeResult
 from textual.containers import Container, Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Label, Static
+from rich.text import Text
+
+
+def safe_str(value, max_len: int | None = None) -> str:
+    """Safely convert any value to string."""
+    if value is None:
+        return ""
+    try:
+        s = repr(value) if isinstance(value, (dict, list, tuple)) else str(value)
+        return s[:max_len] + "..." if max_len and len(s) > max_len else s
+    except Exception:
+        return "<error>"
 
 
 class ApprovalDialog(ModalScreen):
@@ -60,15 +72,6 @@ class ApprovalDialog(ModalScreen):
         tool_args: dict,
         **kwargs
     ):
-        """Initialize the approval dialog.
-        
-        Args:
-            title: Dialog title
-            message: Description of the operation
-            tool_name: Name of the tool being called
-            tool_args: Arguments passed to the tool
-            **kwargs: Additional arguments for ModalScreen
-        """
         super().__init__(**kwargs)
         self.title_text = title
         self.message = message
@@ -82,19 +85,17 @@ class ApprovalDialog(ModalScreen):
             yield Label(self.title_text, classes="dialog-title")
             
             with Vertical(classes="dialog-content"):
-                yield Static(f"[bold]Tool:[/bold] {self.tool_name}")
-                yield Static(f"[bold]Operation:[/bold] {self.message}")
+                # Text.assemble: (text, style) tuples - plain text won't be parsed as markup
+                yield Static(Text.assemble(("Tool: ", "bold"), (self.tool_name, "")))
+                yield Static(Text.assemble(("Operation: ", "bold"), (self.message, "")))
                 yield Static("")
                 
                 # Show tool arguments
                 if self.tool_args:
-                    yield Static("[bold]Arguments:[/bold]")
+                    yield Static(Text("Arguments:", style="bold"))
                     for key, value in self.tool_args.items():
-                        # Truncate long values
-                        val_str = str(value)
-                        if len(val_str) > 200:
-                            val_str = val_str[:200] + "..."
-                        yield Static(f"  {key}: {val_str}")
+                        val_str = safe_str(value, max_len=200)
+                        yield Static(Text(f"  {safe_str(key)}: {val_str}"))
             
             with Horizontal(classes="button-row"):
                 yield Button("Yes", variant="success", id="yes")

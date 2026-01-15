@@ -2,14 +2,18 @@
 
 from textual.containers import VerticalScroll
 from textual.widgets import Markdown, Static
+from rich.text import Text
 
 
-def escape_markup(text: str) -> str:
-    """Escape Rich markup characters to prevent parsing errors.
-    
-    Brackets [ ] are doubled to escape them in Rich markup.
-    """
-    return text.replace("[", "[[").replace("]", "]]")
+def safe_str(value, max_len: int | None = None) -> str:
+    """Safely convert any value to string."""
+    if value is None:
+        return ""
+    try:
+        s = repr(value) if isinstance(value, (dict, list, tuple)) else str(value)
+        return s[:max_len] + "..." if max_len and len(s) > max_len else s
+    except Exception:
+        return "<error>"
 
 
 class StreamingMessage(Static):
@@ -46,7 +50,7 @@ class ToolCallWidget(Static):
     DEFAULT_CSS = """
     ToolCallWidget {
         background: $surface;
-        padding: 0 1;
+        padding: 1;
         margin: 0 0;
         border-left: thick $accent;
         color: $text-muted;
@@ -68,47 +72,67 @@ class ToolCallWidget(Static):
     def __init__(self, tool_name: str, tool_args: dict | None = None, **kwargs) -> None:
         self.tool_name = tool_name
         self.tool_args = tool_args or {}
-        # Format args for display (truncate long values)
-        args_display = self._format_args(self.tool_args)
-        super().__init__(f"[dim]⚙ {tool_name}[/dim] {args_display}", **kwargs)
+        
+        # Build display with Text.assemble - native Rich way
+        args_str = self._format_args_str(self.tool_args)
+        display = Text.assemble(
+            ("⚙ ", "dim"),
+            (tool_name, "dim"),
+            (f" {args_str}" if args_str else "", "dim"),
+        )
+        super().__init__(display, **kwargs)
         self.add_class("running")
 
-    def _format_args(self, args: dict, max_len: int = 60) -> str:
-        """Format tool arguments for display."""
+    def _format_args_str(self, args: dict, max_len: int = 60) -> str:
+        """Format tool arguments as a simple string."""
         if not args:
             return ""
-        parts = []
-        for k, v in args.items():
-            v_str = str(v)
-            if len(v_str) > max_len:
-                v_str = v_str[:max_len] + "..."
-            # Escape markup characters in argument values
-            v_str = escape_markup(v_str)
-            parts.append(f"{k}={v_str}")
-        return "[dim](" + ", ".join(parts) + ")[/dim]"
+        parts = [f"{safe_str(k)}={safe_str(v, max_len)}" for k, v in args.items()]
+        return "(" + ", ".join(parts) + ")"
 
     def mark_completed(self, result: str | None = None) -> None:
         """Mark the tool call as completed."""
         self.remove_class("running")
         self.add_class("completed")
-        result_preview = ""
-        if result:
-            result_str = str(result)[:100]
-            if len(str(result)) > 100:
-                result_str += "..."
-            # Escape markup characters in result to prevent parsing errors
-            result_str = escape_markup(result_str)
-            result_preview = f" → [dim]{result_str}[/dim]"
-        self.update(f"[dim]✓ {self.tool_name}[/dim]{result_preview}")
+        
+        args_str = self._format_args_str(self.tool_args)
+        result_str = safe_str(result, max_len=200) if result else ""
+        
+        # Build with Text.assemble
+        parts = [
+            ("✓ ", "dim"),
+            (self.tool_name, "dim"),
+            (f" {args_str}" if args_str else "", "dim"),
+        ]
+        if result_str:
+            parts.extend([
+                ("\n  → Output: ", "dim"),
+                (result_str, ""),  # Plain text, no style
+            ])
+        
+        self.update(Text.assemble(*parts))
 
     def mark_error(self, error: str | None = None) -> None:
         """Mark the tool call as failed."""
         self.remove_class("running")
         self.add_class("error")
-        # Escape markup characters in error message
-        error_escaped = escape_markup(str(error)) if error else ""
-        error_msg = f" → [red]{error_escaped}[/red]" if error else ""
-        self.update(f"[dim]✗ {self.tool_name}[/dim]{error_msg}")
+        
+        args_str = self._format_args_str(self.tool_args)
+        error_str = safe_str(error, max_len=200) if error else ""
+        
+        # Build with Text.assemble
+        parts = [
+            ("✗ ", "dim"),
+            (self.tool_name, "dim"),
+            (f" {args_str}" if args_str else "", "dim"),
+        ]
+        if error_str:
+            parts.extend([
+                ("\n  → Error: ", "red"),
+                (error_str, "red"),
+            ])
+        
+        self.update(Text.assemble(*parts))
 
 
 class OutputPanel(VerticalScroll):
@@ -167,9 +191,9 @@ class OutputPanel(VerticalScroll):
     def add_user_message(self, message: str) -> None:
         """Add a user message to the output."""
         self._finalize_streaming()
-        # Escape markup in user message to prevent parsing errors
-        safe_message = escape_markup(message)
-        self._add_message(Static(f"[bold]You:[/bold] {safe_message}", classes="user-message"))
+        # Text.assemble: (text, style) tuples - no markup parsing on plain strings
+        display = Text.assemble(("You: ", "bold"), (message, ""))
+        self._add_message(Static(display, classes="user-message"))
 
     def add_agent_message(self, message: str) -> None:
         """Add an agent message (supports markdown)."""
@@ -179,16 +203,14 @@ class OutputPanel(VerticalScroll):
     def add_system_message(self, message: str) -> None:
         """Add a system message."""
         self._finalize_streaming()
-        # Escape markup in system message to prevent parsing errors
-        safe_message = escape_markup(message)
-        self._add_message(Static(f"[italic]{safe_message}[/italic]", classes="system-message"))
+        # Plain text with italic style
+        self._add_message(Static(Text(message, style="italic"), classes="system-message"))
 
     def add_error_message(self, message: str) -> None:
         """Add an error message."""
         self._finalize_streaming()
-        # Escape markup in error message to prevent parsing errors
-        safe_message = escape_markup(message)
-        self._add_message(Static(f"[bold red]Error:[/bold red] {safe_message}", classes="error-message"))
+        display = Text.assemble(("Error: ", "bold red"), (message, ""))
+        self._add_message(Static(display, classes="error-message"))
 
     # === Streaming support ===
 
@@ -225,10 +247,7 @@ class OutputPanel(VerticalScroll):
 
     def add_tool_call_started(self, tool_id: str, tool_name: str, tool_args: dict | None = None) -> None:
         """Add a tool call started indicator."""
-        # Finalize any streaming content BEFORE the tool call widget
-        # This ensures proper ordering: content -> tool -> more content
         self._finalize_streaming()
-        
         widget = ToolCallWidget(tool_name, tool_args)
         self._tool_widgets[tool_id] = widget
         self.mount(widget)

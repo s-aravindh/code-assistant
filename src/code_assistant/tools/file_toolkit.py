@@ -5,7 +5,7 @@ from pathlib import Path
 from agno.tools.toolkit import Toolkit
 from agno.utils.log import logger
 
-WRITE_OPERATIONS = ["write_file", "edit_file", "delete_file"]
+WRITE_OPERATIONS = ["write_file", "edit_file", "delete_file", "create_file"]
 
 
 class FileToolkit(Toolkit):
@@ -16,7 +16,7 @@ class FileToolkit(Toolkit):
 
         super().__init__(
             name="file_tools",
-            tools=[self.read_file, self.write_file, self.edit_file, self.delete_file],
+            tools=[self.read_file, self.write_file, self.edit_file, self.delete_file, self.create_file],
             requires_confirmation_tools=WRITE_OPERATIONS,
             **kwargs
         )
@@ -63,13 +63,54 @@ class FileToolkit(Toolkit):
             logger.error(f"Error reading file {file_path}: {e}")
             return f"Error reading file: {e}"
     
+    def create_file(
+        self,
+        file_path: str,
+        content: str = "",
+        create_directories: bool = True
+    ) -> str:
+        """Create a new file. Fails if file already exists. Requires user confirmation (HITL).
+        
+        Args:
+            file_path: Path to the file to create (relative to working directory)
+            content: Optional initial content for the file (default: empty string)
+            create_directories: Whether to create parent directories if they don't exist (default: True)
+        
+        Returns:
+            Success or error message
+        """
+        try:
+            path = self._resolve_path(file_path)
+
+            if path.exists():
+                return f"Error: File already exists: {file_path}"
+
+            if create_directories:
+                path.parent.mkdir(parents=True, exist_ok=True)
+
+            path.write_text(content, encoding='utf-8')
+            return f"Successfully created {file_path}"
+
+        except Exception as e:
+            logger.error(f"Error creating file {file_path}: {e}")
+            return f"Error creating file: {e}"
+    
     def write_file(
         self,
         file_path: str,
         content: str,
         create_directories: bool = True
     ) -> str:
-        """Write content to a file. Requires user confirmation (HITL)."""
+        """Write content to a file. Overwrites if file exists. Requires user confirmation (HITL).
+        
+        Args:
+            file_path: Path to the file to write (relative to working directory)
+            content: The content to write to the file (required)
+            create_directories: Whether to create parent directories if they don't exist (default: True)
+        
+        Returns:
+            Success or error message
+        """
         try:
             path = self._resolve_path(file_path)
 
@@ -127,7 +168,14 @@ class FileToolkit(Toolkit):
             return f"Error editing file: {e}"
     
     def delete_file(self, file_path: str) -> str:
-        """Delete a file. Requires user confirmation (HITL)."""
+        """Delete a file. Requires user confirmation (HITL).
+        
+        Args:
+            file_path: Path to the file to delete (relative to working directory)
+        
+        Returns:
+            Success or error message
+        """
         try:
             path = self._resolve_path(file_path)
 

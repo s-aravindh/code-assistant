@@ -42,7 +42,11 @@ class GitToolkit(Toolkit):
             return False, str(e)
     
     def git_status(self) -> str:
-        """Get git status."""
+        """Get git status.
+        
+        Returns:
+            Git status output or error message
+        """
         success, output = self._run_git_command(["status", "--short"])
 
         if not success:
@@ -50,7 +54,15 @@ class GitToolkit(Toolkit):
         return output.strip() or "Working tree clean"
 
     def git_diff(self, staged: bool = False, file: str | None = None) -> str:
-        """Show git diff."""
+        """Show git diff.
+        
+        Args:
+            staged: Whether to show staged changes (default: False)
+            file: Optional specific file to show diff for
+        
+        Returns:
+            Git diff output or error message
+        """
         args = ["diff"]
         if staged:
             args.append("--cached")
@@ -66,7 +78,15 @@ class GitToolkit(Toolkit):
         return output
 
     def git_log(self, count: int = 10, file: str | None = None) -> str:
-        """Show git commit history."""
+        """Show git commit history.
+        
+        Args:
+            count: Number of commits to show (default: 10)
+            file: Optional specific file to show history for
+        
+        Returns:
+            Git log output or error message
+        """
         args = ["log", f"-{count}", "--pretty=format:%h - %an, %ar : %s"]
 
         if file:
@@ -84,7 +104,16 @@ class GitToolkit(Toolkit):
         files: list[str] | None = None,
         add_all: bool = False
     ) -> str:
-        """Create a git commit. Requires user confirmation (HITL)."""
+        """Create a git commit. Requires user confirmation (HITL).
+        
+        Args:
+            message: Commit message (required)
+            files: Optional list of specific files to commit
+            add_all: Whether to stage all changes before committing (default: False)
+        
+        Returns:
+            Success or error message
+        """
         try:
             if add_all:
                 success, output = self._run_git_command(["add", "-A"])

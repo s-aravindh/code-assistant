@@ -39,6 +39,33 @@ from code_assistant.utils.logger import create_logger
 from code_assistant.utils.slash_commands import SlashCommandHandler
 
 
+def safe_stringify(value, max_len: int | None = None) -> str | None:
+    """Safely convert a value to string, handling complex objects.
+    
+    Args:
+        value: The value to convert
+        max_len: Optional maximum length to truncate to
+        
+    Returns:
+        String representation or None if value is None
+    """
+    if value is None:
+        return None
+    
+    try:
+        if isinstance(value, (dict, list, tuple)):
+            result_str = repr(value)
+        else:
+            result_str = str(value)
+    except Exception:
+        result_str = "<unable to stringify>"
+    
+    if max_len and len(result_str) > max_len:
+        result_str = result_str[:max_len]
+    
+    return result_str
+
+
 class MiniClaudeCodeApp(App):
     """Main TUI application for the coding assistant."""
 
@@ -344,11 +371,10 @@ class MiniClaudeCodeApp(App):
                 error = getattr(tool, "error", None)
                 if error:
                     self.logger.error(f"Tool error: {tool_name} - {error}")
-                    self.output.mark_tool_call_error(tool_id, str(error))
+                    error_str = safe_stringify(error)
+                    self.output.mark_tool_call_error(tool_id, error_str)
                 else:
-                    result_preview = None
-                    if getattr(tool, "result", None) is not None:
-                        result_preview = str(tool.result)
+                    result_preview = safe_stringify(getattr(tool, "result", None))
                     self.logger.info(f"Tool done: {tool_name}")
                     self.output.mark_tool_call_completed(tool_id, result_preview)
 
@@ -515,7 +541,7 @@ class MiniClaudeCodeApp(App):
                     if tool:
                         self.output.mark_tool_call_completed(
                             tool_id=tool.tool_call_id or tool.tool_name,
-                            result=str(tool.result)[:100] if tool.result else None,
+                            result=safe_stringify(getattr(tool, "result", None), max_len=200),
                         )
             
             if has_content:
@@ -577,7 +603,7 @@ class MiniClaudeCodeApp(App):
                     if tool:
                         self.output.mark_tool_call_completed(
                             tool_id=tool.tool_call_id or tool.tool_name,
-                            result=str(tool.result)[:100] if tool.result else None,
+                            result=safe_stringify(getattr(tool, "result", None), max_len=200),
                         )
             
             if has_content:
@@ -622,7 +648,7 @@ class MiniClaudeCodeApp(App):
                     if tool:
                         self.output.mark_tool_call_completed(
                             tool_id=tool.tool_call_id or tool.tool_name,
-                            result=str(tool.result)[:100] if tool.result else None,
+                            result=safe_stringify(getattr(tool, "result", None), max_len=200),
                         )
             
             if has_content:

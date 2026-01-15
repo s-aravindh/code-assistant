@@ -26,7 +26,16 @@ class ShellToolkit(Toolkit):
         timeout: int = 300,
         capture_output: bool = True
     ) -> str:
-        """Execute a shell command. Requires user confirmation (HITL)."""
+        """Execute a shell command. Requires user confirmation (HITL).
+        
+        Args:
+            command: The shell command to execute (required)
+            timeout: Maximum execution time in seconds (default: 300)
+            capture_output: Whether to capture stdout/stderr (default: True)
+        
+        Returns:
+            Command output or error message
+        """
         try:
             logger.info(f"Running shell command: {command}")
 

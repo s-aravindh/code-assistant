@@ -28,7 +28,19 @@ class SearchToolkit(Toolkit):
         case_sensitive: bool = True,
         max_results: int = 100
     ) -> str:
-        """Search for a pattern in files using ripgrep (falls back to grep)."""
+        """Search for a pattern in files using ripgrep (falls back to grep).
+        
+        Args:
+            pattern: The search pattern (required)
+            path: Directory to search in (default: ".")
+            include: File glob pattern to include (e.g., "*.py")
+            exclude: File glob pattern to exclude
+            case_sensitive: Whether search is case sensitive (default: True)
+            max_results: Maximum number of results to return (default: 100)
+        
+        Returns:
+            Search results or error message
+        """
         search_path = self.working_directory / path
 
         if not search_path.exists():
@@ -109,7 +121,16 @@ class SearchToolkit(Toolkit):
         path: str = ".",
         max_results: int = 100
     ) -> str:
-        """Find files by name pattern (supports wildcards)."""
+        """Find files by name pattern (supports wildcards).
+        
+        Args:
+            pattern: File name pattern with wildcards (e.g., "*.py") (required)
+            path: Directory to search in (default: ".")
+            max_results: Maximum number of results to return (default: 100)
+        
+        Returns:
+            List of matching files or error message
+        """
         search_path = self.working_directory / path
 
         if not search_path.exists():
