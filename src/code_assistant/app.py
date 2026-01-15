@@ -23,10 +23,10 @@ from code_assistant.agent.memory import create_agent_md_template, parse_agent_md
 from code_assistant.agent.specialized_agents import (
     run_init_agent,
     run_plan_agent,
-    SubAgentManager,
 )
 from code_assistant.config.models import create_model, parse_model_string, get_model_display_name
 from code_assistant.config.settings import Settings
+from code_assistant.storage.conversation import save_conversation, load_conversation
 from code_assistant.ui.components import (
     InputPanel,
     OutputPanel,
@@ -37,6 +37,7 @@ from code_assistant.ui.components import (
 )
 from code_assistant.utils.logger import create_logger
 from code_assistant.utils.slash_commands import SlashCommandHandler
+from code_assistant.utils.cost import format_cost_display, calculate_session_cost
 
 
 def safe_stringify(value, max_len: int | None = None) -> str | None:
@@ -115,15 +116,27 @@ class MiniClaudeCodeApp(App):
         self.agent = None
         self.session_id = str(uuid.uuid4())
         self.total_tokens = 0
+        self.input_tokens = 0
+        self.output_tokens = 0
         self.slash_handler = SlashCommandHandler()
         
-        # Initialize logger
-        settings = Settings()
+        # Context file management
+        self.context_files: set[str] = set()
+        
+        # Conversation messages for save/load
+        self.messages: list[dict] = []
+        
+        # Settings
+        self.settings = Settings()
+        
+        # Initialize logger with rotation settings
         self.logger = create_logger(
             session_id=self.session_id,
-            log_dir=log_dir or settings.log_file,
+            log_dir=log_dir or self.settings.log_file,
             project_path=self.project_path,
-            level=settings.log_level,
+            level=self.settings.log_level,
+            max_size_mb=self.settings.log_max_size_mb,
+            backup_count=self.settings.log_backup_count,
         )
         self.logger.info(f"App started: model={self.model_display}, path={self.project_path}")
 
@@ -424,6 +437,35 @@ class MiniClaudeCodeApp(App):
         else:
             return f"Execute {tool_name} with provided arguments"
 
+    def _validate_agent_md_content(self, content: str) -> bool:
+        """Validate that content looks like a valid AGENT.md file.
+        
+        Args:
+            content: The content to validate
+            
+        Returns:
+            True if content appears valid, False otherwise
+        """
+        if not content:
+            return False
+        
+        # Should start with a markdown heading
+        lines = content.strip().split('\n')
+        first_line = lines[0].strip()
+        
+        # Check if it starts with a heading (# or ##)
+        if not first_line.startswith('#'):
+            return False
+        
+        # Should have some minimum content (at least a few lines)
+        if len(lines) < 3:
+            return False
+        
+        # Should contain at least one section heading
+        has_section = any(line.strip().startswith('##') for line in lines[1:])
+        
+        return has_section
+
     def _handle_slash_command(self, message: str) -> None:
         """Handle a slash command."""
         result = self.slash_handler.execute(message)
@@ -441,21 +483,56 @@ class MiniClaudeCodeApp(App):
         action = result["action"]
 
         match action:
+            # Session commands
             case "clear":
                 self.action_clear()
             case "exit":
                 self.action_quit()
+            case "compact":
+                asyncio.create_task(self._compact_conversation())
+            
+            # Context commands
             case "show_context":
-                self.output.add_system_message(
-                    f"Session: {self.session_id or 'None'}\n"
-                    f"Model: {self.model_display}\n"
-                    f"Tokens: {self.total_tokens:,}\n"
-                    f"Project: {self.project_path}"
-                )
+                context_info = self._get_context_info()
+                self.output.add_system_message(context_info)
+            case "add_files":
+                msg = self._add_context_files(result.get("files", []))
+                self.output.add_system_message(msg)
+            case "remove_files":
+                msg = self._remove_context_files(result.get("files", []))
+                self.output.add_system_message(msg)
+            
+            # Model commands
             case "switch_model":
                 self._switch_model(result["model"])
             case "switch_model_prompt":
                 self.action_model_selector()
+            
+            # Conversation persistence
+            case "save_conversation":
+                msg = self._save_conversation(result.get("filename", "conversation.md"))
+                self.output.add_system_message(msg)
+            case "load_conversation":
+                msg = self._load_conversation(result.get("filename", ""))
+                self.output.add_system_message(msg)
+            
+            # Config and memory
+            case "show_config":
+                config_info = self._get_config_info()
+                self.output.add_system_message(config_info)
+            case "show_memory":
+                memory_info = self._get_memory_info()
+                self.output.add_system_message(memory_info)
+            case "show_cost":
+                cost_info = format_cost_display(
+                    self.model_display,
+                    self.total_tokens,
+                    self.input_tokens if self.input_tokens > 0 else None,
+                    self.output_tokens if self.output_tokens > 0 else None,
+                )
+                self.output.add_system_message(cost_info)
+            
+            # AGENT.md commands
             case "init_agent_md":
                 # Legacy: simple template creation
                 msg = create_agent_md_template(self.project_path)
@@ -463,18 +540,27 @@ class MiniClaudeCodeApp(App):
             case "init_smart":
                 # Smart: use agent to analyze project
                 asyncio.create_task(self._run_init_agent())
+            
+            # Git commands
+            case "git_review":
+                asyncio.create_task(self._run_git_review())
+            case "git_commit":
+                asyncio.create_task(self._run_git_commit())
+            
+            # Advanced agents
             case "run_plan_agent":
                 asyncio.create_task(self._run_plan_agent(result["requirement"]))
-            case "run_subagent":
-                asyncio.create_task(self._run_subagent(result["task"]))
             case "debug_bug":
                 asyncio.create_task(self._run_debug_agent(result["description"]))
             case "generate_tests":
                 asyncio.create_task(self._run_test_generator())
+            
+            # File viewer
             case "open_files":
                 self.action_open_files()
             case "show_help":
                 self.action_help()
+            
             case _:
                 self.output.add_system_message(f"'{action}' not yet implemented")
 
@@ -498,6 +584,257 @@ class MiniClaudeCodeApp(App):
             project_path=self.project_path,
             model=self.model
         )
+
+    # === Context and File Management ===
+
+    def _get_context_info(self) -> str:
+        """Get current context information."""
+        parts = [
+            f"**Session**: {self.session_id[:8]}...",
+            f"**Model**: {self.model_display}",
+            f"**Tokens**: {self.total_tokens:,}",
+            f"**Project**: {self.project_path}",
+        ]
+        
+        if self.context_files:
+            parts.append(f"**Context Files** ({len(self.context_files)}):")
+            for f in sorted(self.context_files)[:10]:
+                parts.append(f"  - {f}")
+            if len(self.context_files) > 10:
+                parts.append(f"  ... and {len(self.context_files) - 10} more")
+        else:
+            parts.append("**Context Files**: None")
+        
+        return "\n".join(parts)
+
+    def _add_context_files(self, files: list[str]) -> str:
+        """Add files to context.
+        
+        Args:
+            files: List of file paths to add
+            
+        Returns:
+            Status message
+        """
+        added = []
+        errors = []
+        
+        for file_path in files:
+            path = Path(self.project_path) / file_path
+            if path.exists() and path.is_file():
+                self.context_files.add(file_path)
+                added.append(file_path)
+            else:
+                errors.append(f"{file_path} (not found)")
+        
+        parts = []
+        if added:
+            parts.append(f"Added {len(added)} file(s) to context: {', '.join(added)}")
+        if errors:
+            parts.append(f"Failed to add: {', '.join(errors)}")
+        
+        return "\n".join(parts) if parts else "No files specified"
+
+    def _remove_context_files(self, files: list[str]) -> str:
+        """Remove files from context.
+        
+        Args:
+            files: List of file paths to remove
+            
+        Returns:
+            Status message
+        """
+        removed = []
+        not_found = []
+        
+        for file_path in files:
+            if file_path in self.context_files:
+                self.context_files.remove(file_path)
+                removed.append(file_path)
+            else:
+                not_found.append(file_path)
+        
+        parts = []
+        if removed:
+            parts.append(f"Removed {len(removed)} file(s) from context: {', '.join(removed)}")
+        if not_found:
+            parts.append(f"Not in context: {', '.join(not_found)}")
+        
+        return "\n".join(parts) if parts else "No files specified"
+
+    # === Conversation Persistence ===
+
+    def _save_conversation(self, filename: str) -> str:
+        """Save the current conversation to a file.
+        
+        Args:
+            filename: File to save to
+            
+        Returns:
+            Status message
+        """
+        return save_conversation(
+            session_id=self.session_id,
+            messages=self.messages,
+            filename=filename,
+            project_path=self.project_path,
+            model_name=self.model_display,
+            total_tokens=self.total_tokens,
+        )
+
+    def _load_conversation(self, filename: str) -> str:
+        """Load a conversation from a file.
+        
+        Args:
+            filename: File to load from
+            
+        Returns:
+            Status message
+        """
+        if not filename:
+            return "Usage: /load <filename>"
+        
+        session_id, messages, msg = load_conversation(filename)
+        
+        if session_id:
+            self.session_id = session_id
+            self.messages = messages
+            self.logger.info(f"Loaded conversation from {filename}")
+        
+        return msg
+
+    # === Config and Memory ===
+
+    def _get_config_info(self) -> str:
+        """Get current configuration settings."""
+        return (
+            f"**Configuration**\n\n"
+            f"**Provider**: {self.settings.provider}\n"
+            f"**Model**: {self.settings.model}\n"
+            f"**Temperature**: {self.settings.temperature}\n"
+            f"**Max Tokens**: {self.settings.max_tokens}\n\n"
+            f"**Behavior**\n"
+            f"- Confirm writes: {self.settings.confirm_before_write}\n"
+            f"- Confirm execute: {self.settings.confirm_before_execute}\n"
+            f"- Auto-approve reads: {self.settings.auto_approve_reads}\n\n"
+            f"**Logging**: {self.settings.log_level}"
+        )
+
+    def _get_memory_info(self) -> str:
+        """Get agent memory information."""
+        if not self.agent:
+            return "Agent not initialized"
+        
+        # Try to access agent's memory
+        memory_info = ["**Agent Memory**\n"]
+        
+        # Check for user memories
+        if hasattr(self.agent, 'memory') and self.agent.memory:
+            memories = self.agent.memory
+            if hasattr(memories, 'get_memories'):
+                user_memories = memories.get_memories()
+                if user_memories:
+                    memory_info.append(f"**User Memories** ({len(user_memories)}):")
+                    for mem in user_memories[:5]:
+                        memory_info.append(f"  - {mem[:100]}...")
+                    if len(user_memories) > 5:
+                        memory_info.append(f"  ... and {len(user_memories) - 5} more")
+                else:
+                    memory_info.append("No user memories stored")
+            else:
+                memory_info.append("Memory system active (details not accessible)")
+        else:
+            memory_info.append("Memory system: Enabled (using Agno default)")
+        
+        memory_info.append(f"\n**History Runs**: {getattr(self.agent, 'num_history_runs', 'N/A')}")
+        
+        return "\n".join(memory_info)
+
+    # === Conversation Compaction ===
+
+    async def _compact_conversation(self) -> None:
+        """Summarize and compact the conversation history."""
+        if not self.agent:
+            self.output.add_error_message("Agent not initialized")
+            return
+        
+        self.output.add_system_message("Compacting conversation history...")
+        self.status.update_status(status="compacting")
+        
+        try:
+            # Use the agent to summarize
+            prompt = """Please provide a brief summary of our conversation so far. 
+Include:
+1. Main topics discussed
+2. Key decisions made
+3. Files modified or created
+4. Important context to remember
+
+Keep it concise but comprehensive."""
+
+            has_content = False
+            async for event in self.agent.arun(
+                prompt,
+                session_id=self.session_id,
+                stream=True,
+                stream_events=True,
+            ):
+                if isinstance(event, RunContentEvent) and event.content:
+                    if not has_content:
+                        self.output.start_streaming()
+                        has_content = True
+                    self.output.append_to_stream(event.content)
+            
+            if has_content:
+                self.output.finalize_streaming_as_markdown()
+            
+            self.output.add_system_message("Conversation compacted. Old history summarized.")
+            self.status.update_status(status="ready")
+            
+        except Exception as e:
+            self.logger.exception(f"Compact error: {e}")
+            self.output.add_error_message(f"Failed to compact: {e}")
+            self.status.update_status(status="error")
+
+    # === Git Commands ===
+
+    async def _run_git_review(self) -> None:
+        """Review current git changes."""
+        if not self.agent:
+            self.output.add_error_message("Agent not initialized")
+            return
+        
+        self.output.add_system_message("Reviewing git changes...")
+        
+        prompt = """Review the current git changes:
+
+1. First, run `git status` to see the current state
+2. Run `git diff` to see unstaged changes
+3. Run `git diff --cached` to see staged changes
+4. Provide a summary of what has changed
+
+Be concise and highlight important changes."""
+
+        await self._process_message(prompt)
+
+    async def _run_git_commit(self) -> None:
+        """Generate commit message and create commit."""
+        if not self.agent:
+            self.output.add_error_message("Agent not initialized")
+            return
+        
+        self.output.add_system_message("Generating commit...")
+        
+        prompt = """Help me create a git commit:
+
+1. First, run `git status` and `git diff --cached` to see what's staged
+2. If nothing is staged, run `git diff` to see unstaged changes
+3. Analyze the changes and suggest a commit message following conventional commits format
+4. Ask for confirmation before running `git commit`
+
+The commit message should be clear and describe WHY the changes were made."""
+
+        await self._process_message(prompt)
 
     # === Specialized Agent Runners ===
 
@@ -549,19 +886,30 @@ class MiniClaudeCodeApp(App):
             
             # Try to extract and save AGENT.md content
             if content_buffer:
-                # Look for markdown content (the agent should output AGENT.md content)
-                agent_md_path.write_text(content_buffer.strip(), encoding='utf-8')
-                self.output.add_system_message(f"✅ Created/Updated AGENT.md at {agent_md_path}")
+                content_stripped = content_buffer.strip()
                 
-                # Reload agent with new context
-                project_context = parse_agent_md(self.project_path)
-                if project_context:
-                    self.agent = create_coding_agent(
-                        project_path=self.project_path,
-                        model=self.model,
-                        project_context=project_context,
+                # Validate content looks like markdown (should start with a heading)
+                if not content_stripped:
+                    self.output.add_error_message("Generated content is empty")
+                elif not self._validate_agent_md_content(content_stripped):
+                    self.output.add_error_message(
+                        "Generated content doesn't appear to be valid AGENT.md format. "
+                        "Expected markdown starting with a heading (#)."
                     )
-                    self.output.add_system_message("✅ Agent reloaded with project context")
+                else:
+                    # Content is valid, write it
+                    agent_md_path.write_text(content_stripped, encoding='utf-8')
+                    self.output.add_system_message(f"✅ Created/Updated AGENT.md at {agent_md_path}")
+                    
+                    # Reload agent with new context
+                    project_context = parse_agent_md(self.project_path)
+                    if project_context:
+                        self.agent = create_coding_agent(
+                            project_path=self.project_path,
+                            model=self.model,
+                            project_context=project_context,
+                        )
+                        self.output.add_system_message("✅ Agent reloaded with project context")
             
             self.status.update_status(status="ready")
             
@@ -614,52 +962,6 @@ class MiniClaudeCodeApp(App):
         except Exception as e:
             self.logger.exception(f"Plan agent error: {e}")
             self.output.add_error_message(f"Plan agent failed: {e}")
-            self.status.update_status(status="error")
-
-    async def _run_subagent(self, task: str) -> None:
-        """Run sub-agents for a complex task."""
-        self.output.add_system_message(f"🤖 Starting sub-agent execution for: {task[:50]}...")
-        self.status.update_status(status="sub-agents running")
-        
-        try:
-            manager = SubAgentManager(self.project_path, self.model)
-            has_content = False
-            
-            async for event in manager.execute_task(
-                task,
-                session_id=f"{self.session_id}-subagent",
-            ):
-                if isinstance(event, RunContentEvent) and event.content:
-                    if not has_content:
-                        self.output.start_streaming()
-                        has_content = True
-                    self.output.append_to_stream(event.content)
-                elif isinstance(event, ToolCallStartedEvent):
-                    tool = event.tool
-                    if tool:
-                        self.output.add_tool_call_started(
-                            tool_id=tool.tool_call_id or tool.tool_name,
-                            tool_name=tool.tool_name,
-                            tool_args=tool.tool_args or {},
-                        )
-                        has_content = False
-                elif isinstance(event, ToolCallCompletedEvent):
-                    tool = event.tool
-                    if tool:
-                        self.output.mark_tool_call_completed(
-                            tool_id=tool.tool_call_id or tool.tool_name,
-                            result=safe_stringify(getattr(tool, "result", None), max_len=200),
-                        )
-            
-            if has_content:
-                self.output.finalize_streaming_as_markdown()
-            
-            self.output.add_system_message(f"✅ Sub-agent execution complete")
-            self.status.update_status(status="ready")
-            
-        except Exception as e:
-            self.logger.exception(f"Sub-agent error: {e}")
-            self.output.add_error_message(f"Sub-agent execution failed: {e}")
             self.status.update_status(status="error")
 
     async def _run_debug_agent(self, description: str) -> None:

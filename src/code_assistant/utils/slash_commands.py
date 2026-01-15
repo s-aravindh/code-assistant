@@ -24,24 +24,17 @@ HELP_TEXT = """
 
 **Model & Config:**
 - `/model <name>` - Switch to a different model
-- `/config` - Show/edit configuration
-- `/memory` - Show/manage memory entries
+- `/config` - Show current configuration
+- `/memory` - Show agent memory entries
 - `/cost` - Show token usage and estimated cost
 
-**File Operations:**
-- `/diff` - Show pending file changes
-- `/apply` - Apply all pending changes
-- `/reject` - Reject all pending changes
-- `/undo` - Undo last applied change
-
 **Git:**
-- `/init` - Analyze project and create AGENT.md (smart)
-- `/review` - Review current changes in git
+- `/init` - Analyze project and create AGENT.md
+- `/review` - Review current git changes
 - `/commit` - Generate commit message and commit
 
-**Advanced Agents:**
-- `/plan <requirement>` - Create implementation plan for a feature
-- `/subagent <task>` - Execute complex task with sub-agents
+**Advanced:**
+- `/plan <requirement>` - Create implementation plan
 - `/bug <description>` - Start debugging workflow
 - `/test` - Generate tests for recent changes
 """
@@ -71,16 +64,12 @@ class SlashCommandHandler:
             "/clear": lambda _: _action("clear"),
             "/compact": lambda _: _action("compact"),
             "/context": lambda _: _action("show_context"),
-            "/diff": lambda _: _action("show_diff"),
-            "/apply": lambda _: _action("apply_changes"),
-            "/reject": lambda _: _action("reject_changes"),
-            "/undo": lambda _: _action("undo"),
             "/config": lambda _: _action("show_config"),
             "/memory": lambda _: _action("show_memory"),
             "/cost": lambda _: _action("show_cost"),
             "/exit": lambda _: _action("exit"),
             "/quit": lambda _: _action("exit"),
-            "/init": lambda _: _action("init_smart"),  # Smart init with agent
+            "/init": lambda _: _action("init_smart"),
             "/review": lambda _: _action("git_review"),
             "/commit": lambda _: _action("git_commit"),
             "/model": self._model,
@@ -88,9 +77,7 @@ class SlashCommandHandler:
             "/remove": self._remove,
             "/save": self._save,
             "/load": self._load,
-            # Advanced agent commands
             "/plan": self._plan,
-            "/subagent": self._subagent,
             "/bug": self._bug,
             "/test": lambda _: _action("generate_tests"),
         }
@@ -147,12 +134,6 @@ class SlashCommandHandler:
             return _error("Usage: /plan <requirement description>")
         requirement = " ".join(args)
         return _action("run_plan_agent", requirement=requirement)
-
-    def _subagent(self, args: CommandArgs) -> CommandResult:
-        if not args:
-            return _error("Usage: /subagent <task description>")
-        task = " ".join(args)
-        return _action("run_subagent", task=task)
 
     def _bug(self, args: CommandArgs) -> CommandResult:
         if not args:

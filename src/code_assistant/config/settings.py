@@ -142,6 +142,16 @@ class Settings(BaseSettings):
         default=None,
         description="Log file path"
     )
+    log_max_size_mb: int = Field(
+        default=10,
+        ge=1,
+        description="Maximum log file size in MB before rotation"
+    )
+    log_backup_count: int = Field(
+        default=5,
+        ge=0,
+        description="Number of backup log files to keep"
+    )
     
     # Database
     db_path: Optional[str] = Field(

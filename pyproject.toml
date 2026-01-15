@@ -32,6 +32,10 @@ dev = [
     "ruff>=0.2.0",
     "mypy>=1.8.0",
 ]
+tests = [
+    "litellm>=1.80.16",
+    "ollama>=0.6.1",
+]
 
 [build-system]
 requires = ["uv_build>=0.9.24,<0.10.0"]
