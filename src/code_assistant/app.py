@@ -3,7 +3,7 @@
 import asyncio
 import uuid
 from pathlib import Path
-from typing import AsyncIterator, Optional
+from typing import AsyncIterator
 
 from agno.agent import (
     RunContentEvent,
@@ -26,7 +26,6 @@ from code_assistant.agent.specialized_agents import (
 )
 from code_assistant.config.models import create_model, parse_model_string, get_model_display_name
 from code_assistant.config.settings import Settings
-from code_assistant.storage.conversation import save_conversation, load_conversation
 from code_assistant.ui.components import (
     InputPanel,
     OutputPanel,
@@ -119,12 +118,6 @@ class MiniClaudeCodeApp(App):
         self.input_tokens = 0
         self.output_tokens = 0
         self.slash_handler = SlashCommandHandler()
-        
-        # Context file management
-        self.context_files: set[str] = set()
-        
-        # Conversation messages for save/load
-        self.messages: list[dict] = []
         
         # Settings
         self.settings = Settings()
@@ -491,30 +484,16 @@ class MiniClaudeCodeApp(App):
             case "compact":
                 asyncio.create_task(self._compact_conversation())
             
-            # Context commands
+            # Context/info commands
             case "show_context":
                 context_info = self._get_context_info()
                 self.output.add_system_message(context_info)
-            case "add_files":
-                msg = self._add_context_files(result.get("files", []))
-                self.output.add_system_message(msg)
-            case "remove_files":
-                msg = self._remove_context_files(result.get("files", []))
-                self.output.add_system_message(msg)
             
             # Model commands
             case "switch_model":
                 self._switch_model(result["model"])
             case "switch_model_prompt":
                 self.action_model_selector()
-            
-            # Conversation persistence
-            case "save_conversation":
-                msg = self._save_conversation(result.get("filename", "conversation.md"))
-                self.output.add_system_message(msg)
-            case "load_conversation":
-                msg = self._load_conversation(result.get("filename", ""))
-                self.output.add_system_message(msg)
             
             # Config and memory
             case "show_config":
@@ -585,123 +564,16 @@ class MiniClaudeCodeApp(App):
             model=self.model
         )
 
-    # === Context and File Management ===
+    # === Context Info ===
 
     def _get_context_info(self) -> str:
-        """Get current context information."""
-        parts = [
+        """Get current session information."""
+        return "\n".join([
             f"**Session**: {self.session_id[:8]}...",
             f"**Model**: {self.model_display}",
             f"**Tokens**: {self.total_tokens:,}",
             f"**Project**: {self.project_path}",
-        ]
-        
-        if self.context_files:
-            parts.append(f"**Context Files** ({len(self.context_files)}):")
-            for f in sorted(self.context_files)[:10]:
-                parts.append(f"  - {f}")
-            if len(self.context_files) > 10:
-                parts.append(f"  ... and {len(self.context_files) - 10} more")
-        else:
-            parts.append("**Context Files**: None")
-        
-        return "\n".join(parts)
-
-    def _add_context_files(self, files: list[str]) -> str:
-        """Add files to context.
-        
-        Args:
-            files: List of file paths to add
-            
-        Returns:
-            Status message
-        """
-        added = []
-        errors = []
-        
-        for file_path in files:
-            path = Path(self.project_path) / file_path
-            if path.exists() and path.is_file():
-                self.context_files.add(file_path)
-                added.append(file_path)
-            else:
-                errors.append(f"{file_path} (not found)")
-        
-        parts = []
-        if added:
-            parts.append(f"Added {len(added)} file(s) to context: {', '.join(added)}")
-        if errors:
-            parts.append(f"Failed to add: {', '.join(errors)}")
-        
-        return "\n".join(parts) if parts else "No files specified"
-
-    def _remove_context_files(self, files: list[str]) -> str:
-        """Remove files from context.
-        
-        Args:
-            files: List of file paths to remove
-            
-        Returns:
-            Status message
-        """
-        removed = []
-        not_found = []
-        
-        for file_path in files:
-            if file_path in self.context_files:
-                self.context_files.remove(file_path)
-                removed.append(file_path)
-            else:
-                not_found.append(file_path)
-        
-        parts = []
-        if removed:
-            parts.append(f"Removed {len(removed)} file(s) from context: {', '.join(removed)}")
-        if not_found:
-            parts.append(f"Not in context: {', '.join(not_found)}")
-        
-        return "\n".join(parts) if parts else "No files specified"
-
-    # === Conversation Persistence ===
-
-    def _save_conversation(self, filename: str) -> str:
-        """Save the current conversation to a file.
-        
-        Args:
-            filename: File to save to
-            
-        Returns:
-            Status message
-        """
-        return save_conversation(
-            session_id=self.session_id,
-            messages=self.messages,
-            filename=filename,
-            project_path=self.project_path,
-            model_name=self.model_display,
-            total_tokens=self.total_tokens,
-        )
-
-    def _load_conversation(self, filename: str) -> str:
-        """Load a conversation from a file.
-        
-        Args:
-            filename: File to load from
-            
-        Returns:
-            Status message
-        """
-        if not filename:
-            return "Usage: /load <filename>"
-        
-        session_id, messages, msg = load_conversation(filename)
-        
-        if session_id:
-            self.session_id = session_id
-            self.messages = messages
-            self.logger.info(f"Loaded conversation from {filename}")
-        
-        return msg
+        ])
 
     # === Config and Memory ===
 

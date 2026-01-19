@@ -1,11 +1,8 @@
 """Model factory for creating Agno model instances."""
 
-from typing import Any, TYPE_CHECKING
+from typing import Any
 
 from agno.models.base import Model
-
-if TYPE_CHECKING:
-    pass  # Type hints only
 
 # Default model IDs per provider
 PROVIDER_DEFAULTS = {

@@ -14,19 +14,15 @@ HELP_TEXT = """
 - `/clear` - Clear conversation history
 - `/compact` - Summarize conversation to save tokens
 - `/exit`, `/quit` - Exit the application
-- `/save [file]` - Save conversation to file
-- `/load <file>` - Load conversation from file
 
-**Context:**
-- `/context` - Show current context (files, tokens)
-- `/add <file>` - Add file(s) to context
-- `/remove <file>` - Remove file(s) from context
-
-**Model & Config:**
-- `/model <name>` - Switch to a different model
+**Info:**
+- `/context` - Show current session info (model, tokens)
 - `/config` - Show current configuration
 - `/memory` - Show agent memory entries
 - `/cost` - Show token usage and estimated cost
+
+**Model:**
+- `/model <name>` - Switch to a different model
 
 **Git:**
 - `/init` - Analyze project and create AGENT.md
@@ -73,10 +69,6 @@ class SlashCommandHandler:
             "/review": lambda _: _action("git_review"),
             "/commit": lambda _: _action("git_commit"),
             "/model": self._model,
-            "/add": self._add,
-            "/remove": self._remove,
-            "/save": self._save,
-            "/load": self._load,
             "/plan": self._plan,
             "/bug": self._bug,
             "/test": lambda _: _action("generate_tests"),
@@ -109,25 +101,6 @@ class SlashCommandHandler:
         if not args:
             return _error("Usage: /model <model_name>")
         return _action("switch_model", model=" ".join(args))
-
-    def _add(self, args: CommandArgs) -> CommandResult:
-        if not args:
-            return _error("Usage: /add <file_path>")
-        return _action("add_files", files=args)
-
-    def _remove(self, args: CommandArgs) -> CommandResult:
-        if not args:
-            return _error("Usage: /remove <file_path>")
-        return _action("remove_files", files=args)
-
-    def _save(self, args: CommandArgs) -> CommandResult:
-        filename = args[0] if args else "conversation.md"
-        return _action("save_conversation", filename=filename)
-
-    def _load(self, args: CommandArgs) -> CommandResult:
-        if not args:
-            return _error("Usage: /load <filename>")
-        return _action("load_conversation", filename=args[0])
 
     def _plan(self, args: CommandArgs) -> CommandResult:
         if not args:
