@@ -19,6 +19,7 @@ from textual.containers import Vertical
 from textual.widgets import Footer, Header
 
 from myassistant.agent.coding_agent import create_coding_agent
+from myassistant.agent.repo_analyzer import create_repo_analyzer_agent
 from myassistant.config.context_loader import ContextLoader
 from myassistant.config.models import create_model, parse_model_string, get_model_display_name
 from myassistant.config.settings import Settings
@@ -525,6 +526,8 @@ class MyAssistantApp(App):
                     self.output_tokens if self.output_tokens > 0 else None,
                 )
                 self.output.add_system_message(cost_info)
+            case "analyze":
+                asyncio.create_task(self._run_analyze(force=result.get("force", False)))
             case "open_files":
                 self.action_open_files()
             case "show_help":
@@ -611,6 +614,41 @@ class MyAssistantApp(App):
         return "\n".join(memory_info)
 
     # === Conversation Compaction ===
+
+    async def _run_analyze(self, force: bool = False) -> None:
+        """Run the repo analyzer agent and stream its output."""
+        self.output.add_system_message(f"Analyzing {self.project_path} ...")
+        self.status.update_status(status="analyzing")
+
+        try:
+            analyzer = create_repo_analyzer_agent(
+                project_path=self.project_path,
+                model=self.model,
+                force=force,
+            )
+
+            has_content = False
+            async for event in analyzer.arun(
+                "Analyze this repository and generate the context/ files.",
+                stream=True,
+                stream_events=True,
+            ):
+                if isinstance(event, RunContentEvent) and event.content:
+                    if not has_content:
+                        self.output.start_streaming()
+                        has_content = True
+                    self.output.append_to_stream(event.content)
+
+            if has_content:
+                self.output.finalize_streaming_as_markdown()
+
+            self.output.add_system_message("Analysis complete. context/ files written.")
+            self.status.update_status(status="ready")
+
+        except Exception as e:
+            self.logger.exception(f"Analyze error: {e}")
+            self.output.add_error_message(f"Failed to analyze: {e}")
+            self.status.update_status(status="error")
 
     async def _compact_conversation(self) -> None:
         """Summarize and compact the conversation history."""

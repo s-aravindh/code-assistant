@@ -23,6 +23,10 @@ HELP_TEXT = """
 
 **Model:**
 - `/model <name>` - Switch to a different model (e.g. `/model openai:gpt-4o`)
+
+**Project:**
+- `/analyze` - Analyze this repo and generate context/ config files
+- `/analyze --force` - Re-run analysis, overwriting existing context/ files
 """
 
 
@@ -56,6 +60,7 @@ class SlashCommandHandler:
             "/exit": lambda _: _action("exit"),
             "/quit": lambda _: _action("exit"),
             "/model": self._model,
+            "/analyze": self._analyze,
         }
 
     def is_slash_command(self, message: str) -> bool:
@@ -85,4 +90,8 @@ class SlashCommandHandler:
         if not args:
             return _error("Usage: /model <model_name>")
         return _action("switch_model", model=" ".join(args))
+
+    def _analyze(self, args: CommandArgs) -> CommandResult:
+        force = "--force" in args or "-f" in args
+        return _action("analyze", force=force)
 
