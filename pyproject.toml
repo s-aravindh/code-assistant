@@ -1,5 +1,5 @@
 [project]
-name = "code-assistant"
+name = "myassistant"
 version = "0.1.0"
 description = "A TUI-based agentic coding assistant powered by Agno"
 readme = "README.md"
@@ -8,7 +8,7 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
-    "agno>=2.3.26",
+    "agno>=2.5.15",
     "anthropic>=0.75.0",
     "openai>=2.15.0",
     "textual>=0.47.0",
@@ -18,12 +18,11 @@ dependencies = [
     "tiktoken>=0.6.0",
     "pygments>=2.17.0",
     "rich>=13.7.0",
-    "pyyaml>=6.0.0",
     "sqlalchemy>=2.0.45",
 ]
 
 [project.scripts]
-mcc = "code_assistant.main:app"
+myassistant = "myassistant.main:app"
 
 [project.optional-dependencies]
 dev = [

@@ -1,0 +1,11 @@
+{
+  "num_history_runs": 15,
+  "add_history_to_context": true,
+  "read_chat_history": true,
+  "read_tool_call_history": true,
+  "markdown": true,
+  "temperature": 0.7,
+  "max_tokens": 4096,
+  "confirmation_tools": ["run_shell"],
+  "unknown_command_behavior": "auto_approve"
+}

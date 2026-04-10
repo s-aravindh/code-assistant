@@ -1,7 +1,7 @@
 """Tests for cost calculation utilities."""
 
 import pytest
-from code_assistant.utils.cost import (
+from myassistant.utils.cost import (
     get_pricing,
     calculate_cost,
     calculate_session_cost,

@@ -1,7 +1,7 @@
 """Tests for settings."""
 
 import pytest
-from code_assistant.config.settings import Settings
+from myassistant.config.settings import Settings
 
 
 class TestSettings:
@@ -18,9 +18,9 @@ class TestSettings:
     
     def test_settings_from_env(self, monkeypatch):
         """Test loading settings from environment variables."""
-        monkeypatch.setenv("MCC_PROVIDER", "openai")
-        monkeypatch.setenv("MCC_MODEL", "openai:gpt-4o")
-        monkeypatch.setenv("MCC_TEMPERATURE", "0.5")
+        monkeypatch.setenv("MA_PROVIDER", "openai")
+        monkeypatch.setenv("MA_MODEL", "openai:gpt-4o")
+        monkeypatch.setenv("MA_TEMPERATURE", "0.5")
         
         settings = Settings()
         
@@ -35,10 +35,7 @@ class TestSettings:
         assert settings.log_max_size_mb == 10
         assert settings.log_backup_count == 5
     
-    def test_behavior_settings(self):
-        """Test behavior settings have defaults."""
+    def test_log_level_setting(self):
+        """Test log level setting has a default."""
         settings = Settings()
-        
-        assert settings.confirm_before_write is True
-        assert settings.confirm_before_execute is True
-        assert settings.auto_approve_reads is True
+        assert settings.log_level == "info"
