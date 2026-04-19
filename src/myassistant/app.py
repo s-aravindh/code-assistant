@@ -6,7 +6,9 @@ from pathlib import Path
 from typing import AsyncIterator
 
 from agno.agent import (
+    RunCancelledEvent,
     RunContentEvent,
+    RunErrorEvent,
     RunOutputEvent,
     ToolCallCompletedEvent,
     ToolCallStartedEvent,
@@ -236,7 +238,8 @@ class MyAssistantApp(App):
 
                 continue_result = await self._stream_run(
                     self.agent.acontinue_run(
-                        run_response=run_event,
+                        run_id=run_event.run_id,
+                        requirements=run_event.requirements,
                         stream=True,
                         stream_events=True,
                         session_id=self.session_id,
@@ -360,6 +363,16 @@ class MyAssistantApp(App):
                     result_preview = safe_stringify(getattr(tool, "result", None))
                     self.logger.info(f"Tool done: {tool_name}")
                     self.output.mark_tool_call_completed(tool_id, result_preview)
+
+        elif isinstance(event, RunErrorEvent):
+            error_msg = event.content or "Unknown error during run"
+            self.logger.error(f"Run error event: {error_msg}")
+            self.output.add_error_message(f"Agent error: {error_msg}")
+
+        elif isinstance(event, RunCancelledEvent):
+            reason = getattr(event, "reason", None) or "Run was cancelled"
+            self.logger.warning(f"Run cancelled: {reason}")
+            self.output.add_system_message(f"Run cancelled: {reason}")
 
         return has_content
 
