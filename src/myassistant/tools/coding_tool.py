@@ -11,6 +11,7 @@ Extend this class or add new methods to add project-specific tools.
 
 from __future__ import annotations
 
+import difflib
 import fnmatch
 import subprocess
 from pathlib import Path
@@ -189,6 +190,15 @@ class CodingTool(Toolkit):
             resolved.write_text(updated, encoding="utf-8")
         except OSError as e:
             return f"Error writing file: {e}"
+
+        # Generate a compact unified diff of the change
+        diff_lines = list(difflib.unified_diff(
+            old_text.splitlines(), new_text.splitlines(), lineterm="", n=3
+        ))
+        # Skip the --- / +++ header lines (index 0, 1)
+        diff_body = "\n".join(diff_lines[2:]) if len(diff_lines) > 2 else ""
+        if diff_body:
+            return f"Edit applied to {path}\n{diff_body}"
 
         lines_changed = new_text.count("\n") - old_text.count("\n")
         return f"Edit applied to {path} ({lines_changed:+d} lines)"

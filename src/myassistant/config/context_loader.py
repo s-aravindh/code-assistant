@@ -191,6 +191,10 @@ class ContextLoader:
         return self._read_json(
             "agent_settings.json",
             default={
+                "provider": "anthropic",
+                "model_id": "claude-sonnet-4-20250514",
+                "base_url": None,
+                "api_key": None,
                 "num_history_runs": 15,
                 "add_history_to_context": True,
                 "read_chat_history": True,

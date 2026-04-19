@@ -85,10 +85,16 @@ class ToolCallWidget(Static):
         """Mark the tool call as completed."""
         self.remove_class("running")
         self.add_class("completed")
-        
+
         args_str = self._format_args_str(self.tool_args)
+
+        # Diff result: render with syntax coloring
+        if result and "\n@@" in result:
+            self.update(self._render_diff_result(result))
+            return
+
         result_str = safe_str(result, max_len=200) if result else ""
-        
+
         # Build with Text.assemble
         parts = [
             ("✓ ", "dim"),
@@ -100,8 +106,38 @@ class ToolCallWidget(Static):
                 ("\n  → Output: ", "dim"),
                 (result_str, ""),  # Plain text, no style
             ])
-        
+
         self.update(Text.assemble(*parts))
+
+    def _render_diff_result(self, result: str) -> Text:
+        """Render an edit_file result that contains a unified diff with colors.
+
+        Args:
+            result (str): Result string where first line is the summary and
+                          remaining lines are unified diff output.
+
+        Returns:
+            Text: Rich Text object with per-line diff coloring.
+        """
+        text = Text()
+        lines = result.split("\n")
+
+        # First line: summary header (e.g. "Edit applied to src/foo.py")
+        text.append("✓ ", style="dim")
+        text.append(lines[0], style="bold")
+
+        for line in lines[1:]:
+            text.append("\n")
+            if line.startswith("+"):
+                text.append(line, style="green")
+            elif line.startswith("-"):
+                text.append(line, style="red")
+            elif line.startswith("@@"):
+                text.append(line, style="cyan")
+            else:
+                text.append(line, style="dim")
+
+        return text
 
     def mark_error(self, error: str | None = None) -> None:
         """Mark the tool call as failed."""

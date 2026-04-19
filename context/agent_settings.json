@@ -1,4 +1,8 @@
 {
+  "provider": "anthropic",
+  "model_id": "claude-sonnet-4-20250514",
+  "base_url": null,
+  "api_key": null,
   "num_history_runs": 15,
   "add_history_to_context": true,
   "read_chat_history": true,

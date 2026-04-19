@@ -6,6 +6,7 @@ import typer
 from rich.console import Console
 
 from myassistant.app import run_app
+from myassistant.config.context_loader import ContextLoader
 from myassistant.config.models import PROVIDER_DEFAULTS
 
 app = typer.Typer(
@@ -46,8 +47,8 @@ def _resolve_model(model: str, provider: str | None, base_url: str | None, api_k
 def main(
     ctx: typer.Context,
     project_path: str | None = typer.Option(None, "--project", "-P", help="Project directory (defaults to cwd)"),
-    model: str = typer.Option(
-        "anthropic:claude-sonnet-4-20250514",
+    model: str | None = typer.Option(
+        None,
         "--model", "-m",
         help="Model string (provider:model_id) e.g. anthropic:claude-sonnet-4-20250514, openai:gpt-4o, ollama:llama3.2"
     ),
@@ -87,7 +88,19 @@ def main(
         return
 
     proj_path = str(Path(project_path).resolve()) if project_path else str(Path.cwd())
-    model, model_kwargs = _resolve_model(model, provider, base_url, api_key)
+
+    # Load agent_settings for model fallbacks (CLI args take priority)
+    agent_settings = ContextLoader(proj_path).agent_settings
+    resolved_base_url = base_url or agent_settings.get("base_url") or None
+    resolved_api_key = api_key or agent_settings.get("api_key") or None
+
+    # Resolve model string: CLI --provider/--model > agent_settings > hardcoded default
+    if not provider and model is None:
+        as_provider = agent_settings.get("provider", "anthropic")
+        as_model_id = agent_settings.get("model_id") or PROVIDER_DEFAULTS.get(as_provider, "default")
+        model = f"{as_provider}:{as_model_id}"
+
+    model, model_kwargs = _resolve_model(model or "", provider, resolved_base_url, resolved_api_key)
 
     try:
         run_app(project_path=proj_path, model=model, log_dir=log_dir, **model_kwargs)

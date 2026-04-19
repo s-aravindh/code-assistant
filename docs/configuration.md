@@ -77,6 +77,10 @@ Controls agent behaviour, HITL settings, and storage paths.
 
 ```json
 {
+  "provider": "anthropic",
+  "model_id": "claude-sonnet-4-20250514",
+  "base_url": null,
+  "api_key": null,
   "num_history_runs": 15,
   "add_history_to_context": true,
   "read_chat_history": true,
@@ -93,6 +97,10 @@ Controls agent behaviour, HITL settings, and storage paths.
 
 | Key | Default | Description |
 |---|---|---|
+| `provider` | `"anthropic"` | LLM provider (`anthropic`, `openai`, `ollama`, `openrouter`, `litellm`) |
+| `model_id` | `"claude-sonnet-4-20250514"` | Model ID for the selected provider |
+| `base_url` | `null` | Custom API base URL (for proxies or self-hosted models) |
+| `api_key` | `null` | API key override (prefer env vars for security) |
 | `num_history_runs` | `15` | Number of past runs included in context |
 | `add_history_to_context` | `true` | Include run history in agent context |
 | `read_chat_history` | `true` | Allow agent to read past chat messages |
