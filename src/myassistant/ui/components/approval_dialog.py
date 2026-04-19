@@ -7,16 +7,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Label, Static
 from rich.text import Text
 
-
-def safe_str(value, max_len: int | None = None) -> str:
-    """Safely convert any value to string."""
-    if value is None:
-        return ""
-    try:
-        s = repr(value) if isinstance(value, (dict, list, tuple)) else str(value)
-        return s[:max_len] + "..." if max_len and len(s) > max_len else s
-    except Exception:
-        return "<error>"
+from myassistant.utils import safe_str
 
 
 class ApprovalDialog(ModalScreen):

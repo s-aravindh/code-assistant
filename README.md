@@ -4,7 +4,7 @@
 
 [![Demo Video](./assets/mcc-sc.png)](./assets/mcc-demo.mov)
 
-# Mini-Claude-Code
+# myassistant
 
 A TUI-based agentic coding assistant powered by [Agno](https://github.com/agno-agi/agno) and [Textual](https://github.com/Textualize/textual)
 
@@ -26,15 +26,15 @@ uv sync --all-extras
 
 ```bash
 # Start in current directory
-mcc
+myassistant
 
 # Start in specific project
-mcc /path/to/project
+myassistant /path/to/project
 
 # Use a specific model
-mcc -m openai:gpt-4o
-mcc -m ollama:llama3.2
-mcc --provider anthropic
+myassistant -m openai:gpt-4o
+myassistant -m ollama:llama3.2
+myassistant --provider anthropic
 ```
 
 ## Keyboard Shortcuts
@@ -59,16 +59,11 @@ mcc --provider anthropic
 
 /context  - Show session info
 /config   - Show configuration
+/memory   - Show agent memory
 /cost     - Show token usage
 /model    - Switch model
 
-/init     - Create AGENT.md
-/review   - Review git changes
-/commit   - Generate commit
-
-/plan     - Create implementation plan
-/bug      - Debug workflow
-/test     - Generate tests
+/analyze  - Analyze repo and generate context/ config
 ```
 
 ## Configuration
@@ -85,8 +80,8 @@ export OPENAI_API_KEY="your-key"
 Create an `AGENT.md` in your project root to give the agent context:
 
 ```bash
-mcc
-> /init
+myassistant
+> /analyze
 ```
 
 

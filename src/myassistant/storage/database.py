@@ -9,12 +9,12 @@ from agno.db.sqlite import SqliteDb
 def get_default_db_path() -> str:
     """Get the default database path."""
     if os.name == "posix":
-        data_dir = Path.home() / ".local" / "share" / "mcc"
+        data_dir = Path.home() / ".local" / "share" / "myassistant"
     else:
-        data_dir = Path.home() / "AppData" / "Local" / "mcc"
+        data_dir = Path.home() / "AppData" / "Local" / "myassistant"
 
     data_dir.mkdir(parents=True, exist_ok=True)
-    return str(data_dir / "mcc.db")
+    return str(data_dir / "myassistant.db")
 
 
 def create_database(db_path: str | None = None) -> SqliteDb:

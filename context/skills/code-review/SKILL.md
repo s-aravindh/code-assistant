@@ -1,6 +1,9 @@
 ---
 name: code-review
 description: Guidelines for reviewing code changes and explaining modifications to the user.
+metadata:
+  version: "1.0.0"
+  tags: ["code-quality", "review", "refactoring"]
 ---
 
 ## Code Review Guidelines

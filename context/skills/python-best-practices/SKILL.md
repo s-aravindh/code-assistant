@@ -1,6 +1,9 @@
 ---
 name: python-best-practices
 description: Python coding conventions and best practices for writing clean, maintainable code.
+metadata:
+  version: "1.0.0"
+  tags: ["python", "code-quality", "style"]
 ---
 
 ## Python Best Practices

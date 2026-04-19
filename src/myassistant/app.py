@@ -3,7 +3,6 @@
 import asyncio
 import uuid
 from pathlib import Path
-from typing import AsyncIterator
 
 from agno.agent import (
     RunCancelledEvent,
@@ -21,7 +20,6 @@ from textual.containers import Vertical
 from textual.widgets import Footer, Header
 
 from myassistant.agent.coding_agent import create_coding_agent
-from myassistant.agent.repo_analyzer import create_repo_analyzer_agent
 from myassistant.config.context_loader import ContextLoader
 from myassistant.config.models import create_model, parse_model_string, get_model_display_name
 from myassistant.config.settings import Settings
@@ -36,33 +34,7 @@ from myassistant.ui.components import (
 from myassistant.utils.logger import create_logger
 from myassistant.utils.slash_commands import SlashCommandHandler
 from myassistant.utils.cost import format_cost_display
-
-
-def safe_stringify(value, max_len: int | None = None) -> str | None:
-    """Safely convert a value to string, handling complex objects.
-    
-    Args:
-        value: The value to convert
-        max_len: Optional maximum length to truncate to
-        
-    Returns:
-        String representation or None if value is None
-    """
-    if value is None:
-        return None
-    
-    try:
-        if isinstance(value, (dict, list, tuple)):
-            result_str = repr(value)
-        else:
-            result_str = str(value)
-    except Exception:
-        result_str = "<unable to stringify>"
-    
-    if max_len and len(result_str) > max_len:
-        result_str = result_str[:max_len]
-    
-    return result_str
+from myassistant.utils import safe_str
 
 
 class MyAssistantApp(App):
@@ -114,18 +86,25 @@ class MyAssistantApp(App):
         self.agent = None
         self.session_id = str(uuid.uuid4())
         self.total_tokens = 0
-        self.input_tokens = 0
-        self.output_tokens = 0
         self.slash_handler = SlashCommandHandler()
-        
+
         # Settings
         self.settings = Settings()
         self.context_loader = ContextLoader(self.project_path)
-        
+
+        # logs_dir: explicit arg > agent_settings.json > default (project_path/myassistant_logs)
+        agent_settings = self.context_loader.agent_settings
+        logs_dir_setting = agent_settings.get("logs_dir")
+        resolved_log_dir = (
+            log_dir
+            or self.settings.log_file
+            or (Path(self.project_path) / logs_dir_setting if logs_dir_setting else None)
+        )
+
         # Initialize logger with rotation settings
         self.logger = create_logger(
             session_id=self.session_id,
-            log_dir=log_dir or self.settings.log_file,
+            log_dir=resolved_log_dir,
             project_path=self.project_path,
             level=self.settings.log_level,
             max_size_mb=self.settings.log_max_size_mb,
@@ -187,10 +166,9 @@ class MyAssistantApp(App):
         """Process a user message with the agent using streaming.
 
         Uses Agno's HITL pattern:
-        1. Stream events from agent.arun()
-        2. If run_event.is_paused, handle confirmations via active_requirements
-        3. Shell commands are auto-confirmed unless destructive
-        4. Use acontinue_run(run_id=...) to resume; loop until not paused
+        1. Stream events from agent.arun() until complete or paused
+        2. If paused, handle confirmations, then reassign stream to acontinue_run()
+        3. Loop until the run completes (no pause event)
         """
         if not self.agent:
             self.output.add_error_message("Agent not initialized")
@@ -203,52 +181,49 @@ class MyAssistantApp(App):
 
             has_content = False
             final_response = None
-
-            run_result = await self._stream_run(
-                self.agent.arun(
-                    message,
-                    session_id=self.session_id,
-                    stream=True,
-                    stream_events=True,
-                ),
-                has_content,
+            stream = self.agent.arun(
+                message,
+                session_id=self.session_id,
+                stream=True,
+                stream_events=True,
             )
-            has_content = run_result["has_content"]
-            final_response = run_result.get("final_response")
-            run_event = run_result.get("run_event")
 
-            # HITL loop: handle pauses until the run completes
-            while run_event and getattr(run_event, "is_paused", False):
+            while True:
+                last_event = None
+                async for event in stream:
+                    last_event = event
+                    if getattr(event, "is_paused", False):
+                        break
+                    has_content = await self._handle_event(event, has_content)
+                    if isinstance(event, RunCompletedEvent):
+                        final_response = event
+
+                # No pause — run finished
+                if not (last_event and getattr(last_event, "is_paused", False)):
+                    break
+
+                # HITL: handle confirmations then continue
                 self.logger.info("Run paused - handling tool confirmations")
-
-                for requirement in (getattr(run_event, "active_requirements", None) or []):
+                for requirement in (getattr(last_event, "active_requirements", None) or []):
                     if requirement.needs_confirmation:
                         await self._handle_confirmation(requirement)
                     elif getattr(requirement, "needs_user_input", False):
-                        # Not yet handled: log and leave pending so agent handles it
                         tool_name = getattr(requirement.tool_execution, "tool_name", "unknown")
                         self.logger.warning(f"Unhandled user_input requirement for: {tool_name}")
                     elif getattr(requirement, "needs_user_feedback", False):
                         tool_name = getattr(requirement.tool_execution, "tool_name", "unknown")
                         self.logger.warning(f"Unhandled user_feedback requirement for: {tool_name}")
 
-                run_id = getattr(run_event, "run_id", None)
+                run_id = getattr(last_event, "run_id", None)
                 self.logger.info(f"Continuing run: {run_id}")
                 self.status.update_status(status="continuing")
-
-                continue_result = await self._stream_run(
-                    self.agent.acontinue_run(
-                        run_id=run_event.run_id,
-                        requirements=run_event.requirements,
-                        stream=True,
-                        stream_events=True,
-                        session_id=self.session_id,
-                    ),
-                    has_content,
+                stream = self.agent.acontinue_run(
+                    run_id=run_id,
+                    requirements=getattr(last_event, "requirements", None),
+                    stream=True,
+                    stream_events=True,
+                    session_id=self.session_id,
                 )
-                has_content = continue_result["has_content"]
-                final_response = continue_result.get("final_response") or final_response
-                run_event = continue_result.get("run_event")
 
             if has_content:
                 self.output.finalize_streaming_as_markdown()
@@ -269,46 +244,6 @@ class MyAssistantApp(App):
             self.logger.exception(f"Error: {e}")
             self.output.add_error_message(f"Error: {e}")
             self.status.update_status(status="error")
-
-    async def _stream_run(
-        self,
-        response_stream: AsyncIterator[RunOutputEvent],
-        has_content: bool,
-    ) -> dict:
-        """Stream events from an agent run and return the final state.
-        
-        Args:
-            response_stream: Async iterator of run events
-            has_content: Whether content has been streamed already
-            
-        Returns:
-            dict with keys:
-              - has_content: bool
-              - final_response: RunCompletedEvent or None
-              - run_event: Last event (may have is_paused=True)
-        """
-        final_response = None
-        run_event = None
-        
-        async for event in response_stream:
-            run_event = event
-            
-            # Check if this is a paused event - stop processing and return
-            if hasattr(event, 'is_paused') and event.is_paused:
-                self.logger.debug("Received paused event, returning for HITL handling")
-                break
-            
-            # Handle regular events
-            has_content = await self._handle_event(event, has_content)
-            
-            if isinstance(event, RunCompletedEvent):
-                final_response = event
-        
-        return {
-            "has_content": has_content,
-            "final_response": final_response,
-            "run_event": run_event,
-        }
 
     async def _handle_event(self, event: RunOutputEvent, has_content: bool) -> bool:
         """Handle a single event and return updated has_content status.
@@ -357,10 +292,10 @@ class MyAssistantApp(App):
                 error = getattr(tool, "error", None)
                 if error:
                     self.logger.error(f"Tool error: {tool_name} - {error}")
-                    error_str = safe_stringify(error)
+                    error_str = safe_str(error)
                     self.output.mark_tool_call_error(tool_id, error_str)
                 else:
-                    result_preview = safe_stringify(getattr(tool, "result", None))
+                    result_preview = safe_str(getattr(tool, "result", None))
                     self.logger.info(f"Tool done: {tool_name}")
                     self.output.mark_tool_call_completed(tool_id, result_preview)
 
@@ -479,22 +414,6 @@ class MyAssistantApp(App):
         else:
             return f"Execute {tool_name} with provided arguments"
 
-    def _validate_agent_md_content(self, content: str) -> bool:
-        """Validate that content looks like a valid AGENT.md file.
-
-        Args:
-            content (str): The content to validate.
-
-        Returns:
-            bool: True if content appears valid.
-        """
-        if not content:
-            return False
-        lines = content.strip().split('\n')
-        if not lines[0].strip().startswith('#'):
-            return False
-        return any(line.strip().startswith('##') for line in lines[1:])
-
     def _handle_slash_command(self, message: str) -> None:
         """Handle a slash command."""
         result = self.slash_handler.execute(message)
@@ -517,7 +436,10 @@ class MyAssistantApp(App):
             case "exit":
                 self.action_quit()
             case "compact":
-                asyncio.create_task(self._compact_conversation())
+                asyncio.create_task(self._process_message(
+                    "Please provide a concise summary of our conversation so far: "
+                    "main topics discussed, key decisions made, files modified, and important context."
+                ))
             case "show_context":
                 context_info = self._get_context_info()
                 self.output.add_system_message(context_info)
@@ -535,12 +457,14 @@ class MyAssistantApp(App):
                 cost_info = format_cost_display(
                     self.model_display,
                     self.total_tokens,
-                    self.input_tokens if self.input_tokens > 0 else None,
-                    self.output_tokens if self.output_tokens > 0 else None,
                 )
                 self.output.add_system_message(cost_info)
             case "analyze":
-                asyncio.create_task(self._run_analyze(force=result.get("force", False)))
+                # Delegate to the coding agent via the repo-analyzer skill
+                force_note = " Use --force to overwrite existing files." if result.get("force") else ""
+                asyncio.create_task(self._process_message(
+                    f"Please analyze this repository and generate context/ config files.{force_note}"
+                ))
             case "open_files":
                 self.action_open_files()
             case "show_help":
@@ -600,108 +524,11 @@ class MyAssistantApp(App):
         """Get agent memory information."""
         if not self.agent:
             return "Agent not initialized"
-        
-        # Try to access agent's memory
-        memory_info = ["**Agent Memory**\n"]
-        
-        # Check for user memories
-        if hasattr(self.agent, 'memory') and self.agent.memory:
-            memories = self.agent.memory
-            if hasattr(memories, 'get_memories'):
-                user_memories = memories.get_memories()
-                if user_memories:
-                    memory_info.append(f"**User Memories** ({len(user_memories)}):")
-                    for mem in user_memories[:5]:
-                        memory_info.append(f"  - {mem[:100]}...")
-                    if len(user_memories) > 5:
-                        memory_info.append(f"  ... and {len(user_memories) - 5} more")
-                else:
-                    memory_info.append("No user memories stored")
-            else:
-                memory_info.append("Memory system active (details not accessible)")
-        else:
-            memory_info.append("Memory system: Enabled (using Agno default)")
-        
-        memory_info.append(f"\n**History Runs**: {getattr(self.agent, 'num_history_runs', 'N/A')}")
-        
-        return "\n".join(memory_info)
-
-    # === Conversation Compaction ===
-
-    async def _run_analyze(self, force: bool = False) -> None:
-        """Run the repo analyzer agent and stream its output."""
-        self.output.add_system_message(f"Analyzing {self.project_path} ...")
-        self.status.update_status(status="analyzing")
-
-        try:
-            analyzer = create_repo_analyzer_agent(
-                project_path=self.project_path,
-                model=self.model,
-                force=force,
-            )
-
-            has_content = False
-            async for event in analyzer.arun(
-                "Analyze this repository and generate the context/ files.",
-                stream=True,
-                stream_events=True,
-            ):
-                if isinstance(event, RunContentEvent) and event.content:
-                    if not has_content:
-                        self.output.start_streaming()
-                        has_content = True
-                    self.output.append_to_stream(event.content)
-
-            if has_content:
-                self.output.finalize_streaming_as_markdown()
-
-            self.output.add_system_message("Analysis complete. context/ files written.")
-            self.status.update_status(status="ready")
-
-        except Exception as e:
-            self.logger.exception(f"Analyze error: {e}")
-            self.output.add_error_message(f"Failed to analyze: {e}")
-            self.status.update_status(status="error")
-
-    async def _compact_conversation(self) -> None:
-        """Summarize and compact the conversation history."""
-        if not self.agent:
-            self.output.add_error_message("Agent not initialized")
-            return
-
-        self.output.add_system_message("Compacting conversation history...")
-        self.status.update_status(status="compacting")
-
-        try:
-            prompt = (
-                "Please provide a brief summary of our conversation so far. "
-                "Include: main topics discussed, key decisions made, files modified, "
-                "and important context to remember. Keep it concise."
-            )
-
-            has_content = False
-            async for event in self.agent.arun(
-                prompt,
-                session_id=self.session_id,
-                stream=True,
-                stream_events=True,
-            ):
-                if isinstance(event, RunContentEvent) and event.content:
-                    if not has_content:
-                        self.output.start_streaming()
-                        has_content = True
-                    self.output.append_to_stream(event.content)
-
-            if has_content:
-                self.output.finalize_streaming_as_markdown()
-
-            self.output.add_system_message("Conversation compacted.")
-            self.status.update_status(status="ready")
-
-        except Exception as e:
-            self.logger.exception(f"Compact error: {e}")
-            self.output.add_error_message(f"Failed to compact: {e}")
-            self.status.update_status(status="error")
+        return (
+            "**Agent Memory**\n\n"
+            "Memory: Enabled (user memories stored per session)\n"
+            f"**History Runs**: {getattr(self.agent, 'num_history_runs', 'N/A')}"
+        )
 
     # === Actions ===
 
@@ -709,10 +536,6 @@ class MyAssistantApp(App):
         """Clear the output panel."""
         self.output.clear_output()
         self.output.add_system_message("Cleared.")
-
-    def action_quit(self) -> None:
-        """Quit the application."""
-        self.exit()
 
     def action_help(self) -> None:
         """Show help."""

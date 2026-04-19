@@ -19,7 +19,7 @@ def create_logger(
     Args:
         session_id: Session identifier
         log_dir: Custom log directory (takes precedence)
-        project_path: Project path (uses project_path/mcc_logs)
+        project_path: Project path (uses project_path/myassistant_logs)
         level: Log level (DEBUG, INFO, WARNING, ERROR)
         max_size_mb: Maximum log file size in MB before rotation (default: 10)
         backup_count: Number of backup files to keep (default: 5)
@@ -31,14 +31,14 @@ def create_logger(
     if log_dir:
         log_path = Path(log_dir).resolve()
     elif project_path:
-        log_path = Path(project_path).resolve() / "mcc_logs"
+        log_path = Path(project_path).resolve() / "myassistant_logs"
     else:
-        log_path = Path.cwd() / "mcc_logs"
+        log_path = Path.cwd() / "myassistant_logs"
 
     log_path.mkdir(parents=True, exist_ok=True)
 
     # Create logger
-    logger = logging.getLogger(f"mcc_{session_id[:8]}")
+    logger = logging.getLogger(f"myassistant_{session_id[:8]}")
     logger.setLevel(getattr(logging, level.upper(), logging.INFO))
     logger.handlers.clear()
 

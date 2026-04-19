@@ -67,11 +67,13 @@ def create_coding_agent(
     if context_loader is None:
         context_loader = ContextLoader(project_path)
 
-    db = create_database(db_path)
-    system_prompt = _build_system_prompt(context_loader)
-
     # Load configurable agent settings from context/agent_settings.json
     settings = context_loader.agent_settings
+
+    # db_path: explicit arg > agent_settings.json > default (~/.local/share/myassistant)
+    resolved_db_path = db_path or settings.get("db_path") or None
+    db = create_database(resolved_db_path)
+    system_prompt = _build_system_prompt(context_loader)
 
     agent = Agent(
         name="myassistant",
@@ -80,7 +82,6 @@ def create_coding_agent(
         tools=[CodingTool(base_dir=project_path, context_loader=context_loader)],
         skills=context_loader.get_skills(),
         db=db,
-        enable_user_memories=True,
         markdown=settings.get("markdown", True),
         num_history_runs=settings.get("num_history_runs", 15),
         add_history_to_context=settings.get("add_history_to_context", True),

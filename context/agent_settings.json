@@ -6,6 +6,10 @@
   "markdown": true,
   "temperature": 0.7,
   "max_tokens": 4096,
-  "confirmation_tools": ["run_shell"],
-  "unknown_command_behavior": "auto_approve"
+  "confirmation_tools": [
+    "run_shell"
+  ],
+  "unknown_command_behavior": "auto_approve",
+  "logs_dir": "myassistant_logs",
+  "db_path": null
 }
